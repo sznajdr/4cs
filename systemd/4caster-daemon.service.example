@@ -1,0 +1,20 @@
+[Unit]
+Description=4cs trading daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace <INSTALL_DIR> with the absolute path where you cloned 4cs,
+# and (for a --user unit) drop the User= line.
+WorkingDirectory=<INSTALL_DIR>
+EnvironmentFile=<INSTALL_DIR>/.env
+ExecStart=/usr/bin/env node <INSTALL_DIR>/dist/daemon.js
+User=<USER>
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,46 @@
+{
+  "comment": "Sanitized from live /user/getOrdersForGame capture on Hermes 2026-07-02. Account-wide /user/getUnmatched returns the same session-object shape in data.unmatched[].",
+  "unmatched": [
+    {
+      "game": {
+        "isSpecials": false,
+        "isFutures": false,
+        "eventName": "PITTSBURGH PIRATES VS PHILADELPHIA PHILLIES",
+        "tournamentName": null,
+        "periodName": "Full Time",
+        "parentGameID": null,
+        "id": "game-mlb-1",
+        "ended": false,
+        "league": "MLB",
+        "sport": "baseball",
+        "start": "2026-07-01T23:05:00.000Z",
+        "isOpen": true,
+        "participants": [
+          { "id": "part-away", "longName": "PITTSBURGH PIRATES", "homeAway": "away" },
+          { "id": "part-home", "longName": "PHILADELPHIA PHILLIES", "homeAway": "home" }
+        ]
+      },
+      "id": "sess-aaa111",
+      "graded": false,
+      "type": "moneyline",
+      "bet": 1,
+      "txID": "tx-aaa110",
+      "closed": false,
+      "createdAt": "2026-07-01T19:35:49.620Z",
+      "origin": "offer",
+      "adminRefund": false,
+      "wagerRequestID": "wr-aaa109",
+      "userReference": "cli-1782934549272",
+      "odds": 1500,
+      "spread": null,
+      "total": null,
+      "participantID": "part-home",
+      "expiry": null,
+      "takenRatio": 0,
+      "filled": 0,
+      "offered": 1,
+      "remaining": 1,
+      "otherParticipantID": "part-away"
+    }
+  ]
+}

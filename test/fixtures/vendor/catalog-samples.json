@@ -1,0 +1,341 @@
+{
+  "watchList": [
+    "6a3de55ee91162d33dc8708f"
+  ],
+  "sampleOpen": [
+    {
+      "isSpecials": false,
+      "userCreated": false,
+      "live": false,
+      "eventName": "MICHAEL KIM VS JOHNNY KEEFER",
+      "periodName": "Full Time",
+      "id": "6a430b168884eaadfdd589e8",
+      "parentGameID": null,
+      "cheapDataUID": "linesag-96434779",
+      "league": "FED-EX-500",
+      "sport": "golf",
+      "start": "2026-07-02T13:08:00.000Z",
+      "ended": false,
+      "featured": false,
+      "dateGame": "2026-07-02T00:00:00.000Z",
+      "source": "TAK_MASTER_STORE",
+      "isYesNo": false,
+      "isMarketOpen": true,
+      "participants": [
+        {
+          "id": "605d34f45edfc90012b653ff",
+          "longName": "Michael Kim",
+          "shortName": "Kim",
+          "homeAway": "away",
+          "mainPitcher": "Tournament",
+          "rotationNumber": "7025"
+        },
+        {
+          "id": "68490f096984bae7de1cf18a",
+          "longName": "Johnny Keefer",
+          "shortName": "Keefer",
+          "homeAway": "home",
+          "mainPitcher": "Tournament",
+          "rotationNumber": "7026"
+        }
+      ],
+      "awayMoneylines": [
+        {
+          "id": "6a458097459b4ddd935a0d52",
+          "type": "moneyline",
+          "sumUntaken": 248.64,
+          "odds": -112,
+          "bet": 222,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": 0,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:03:19.290Z",
+          "gameStartExpiry": true,
+          "participantID": "605d34f45edfc90012b653ff"
+        },
+        {
+          "id": "6a4581818884eaadfd51cccb",
+          "type": "moneyline",
+          "sumUntaken": 261.96,
+          "odds": -118,
+          "bet": 222,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.559Z",
+          "gameStartExpiry": true,
+          "participantID": "605d34f45edfc90012b653ff"
+        },
+        {
+          "id": "6a4581818884eaadfd51cccd",
+          "type": "moneyline",
+          "sumUntaken": 1025.64,
+          "odds": -132,
+          "bet": 777,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.559Z",
+          "gameStartExpiry": true,
+          "participantID": "605d34f45edfc90012b653ff"
+        },
+        {
+          "id": "6a4581818884eaadfd51cccf",
+          "type": "moneyline",
+          "sumUntaken": 360,
+          "odds": -144,
+          "bet": 250,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.559Z",
+          "gameStartExpiry": true,
+          "participantID": "605d34f45edfc90012b653ff"
+        }
+      ],
+      "homeMoneylines": [
+        {
+          "id": "6a458097459b4ddd935a0d55",
+          "type": "moneyline",
+          "sumUntaken": 222,
+          "odds": 100,
+          "bet": 222,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": 0,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:03:19.316Z",
+          "gameStartExpiry": true,
+          "participantID": "68490f096984bae7de1cf18a"
+        },
+        {
+          "id": "6a4581818884eaadfd51ccb9",
+          "type": "moneyline",
+          "sumUntaken": 226.44,
+          "odds": -102,
+          "bet": 222,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.555Z",
+          "gameStartExpiry": true,
+          "participantID": "68490f096984bae7de1cf18a"
+        },
+        {
+          "id": "6a4581818884eaadfd51ccbb",
+          "type": "moneyline",
+          "sumUntaken": 885.78,
+          "odds": -114,
+          "bet": 777,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.555Z",
+          "gameStartExpiry": true,
+          "participantID": "68490f096984bae7de1cf18a"
+        },
+        {
+          "id": "6a4581818884eaadfd51ccbd",
+          "type": "moneyline",
+          "sumUntaken": 307.5,
+          "odds": -123,
+          "bet": 250,
+          "gameID": "6a430b168884eaadfdd589e8",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-01T21:07:13.555Z",
+          "gameStartExpiry": true,
+          "participantID": "68490f096984bae7de1cf18a"
+        }
+      ],
+      "awaySpreads": [],
+      "homeSpreads": [],
+      "over": [],
+      "under": [],
+      "openInterest": 2942,
+      "mainHomeSpread": 0,
+      "mainAwaySpread": 0,
+      "mainTotal": 0,
+      "matchedVolume": 930.1800000000001,
+      "matchedVolumeByMarket": {
+        "moneyline": 930.1800000000001,
+        "moneyline1x2": {
+          "68490f096984bae7de1cf18a": 0,
+          "605d34f45edfc90012b653ff": 0,
+          "draw": 0
+        },
+        "byAwaySpread": {},
+        "byTotal": {}
+      },
+      "rootGameMatchedVolumeIncludingChildren": 930.1800000000001,
+      "matchedVolumeGameType": "root"
+    },
+    {
+      "isSpecials": false,
+      "userCreated": false,
+      "live": false,
+      "eventName": "JACKSON SUBER VS MAX MCGREEVY",
+      "periodName": "Full Time",
+      "id": "6a430b758884eaadfdd59383",
+      "parentGameID": null,
+      "cheapDataUID": "linesag-96434784",
+      "league": "FED-EX-500",
+      "sport": "golf",
+      "start": "2026-07-02T13:08:00.000Z",
+      "ended": false,
+      "featured": false,
+      "dateGame": "2026-07-02T00:00:00.000Z",
+      "source": "TAK_MASTER_STORE",
+      "isYesNo": false,
+      "isMarketOpen": true,
+      "participants": [
+        {
+          "id": "67858f00cc33c4d8df9f14fb",
+          "longName": "Jackson Suber",
+          "shortName": "Suber",
+          "homeAway": "away",
+          "mainPitcher": "Tournament",
+          "rotationNumber": "7035"
+        },
+        {
+          "id": "62807426c2ccb22f87b019fc",
+          "longName": "Max Mcgreevy",
+          "shortName": "Mcgreevy",
+          "homeAway": "home",
+          "mainPitcher": "Tournament",
+          "rotationNumber": "7036"
+        }
+      ],
+      "awayMoneylines": [
+        {
+          "id": "6a4657e6459b4ddd936ddf74",
+          "type": "moneyline",
+          "sumUntaken": 226.44,
+          "odds": -102,
+          "bet": 222,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": 0,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:58.164Z",
+          "gameStartExpiry": true,
+          "participantID": "67858f00cc33c4d8df9f14fb"
+        },
+        {
+          "id": "6a4657e38884eaadfd841cc6",
+          "type": "moneyline",
+          "sumUntaken": 244.2,
+          "odds": -110,
+          "bet": 222,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.830Z",
+          "gameStartExpiry": true,
+          "participantID": "67858f00cc33c4d8df9f14fb"
+        },
+        {
+          "id": "6a4657e38884eaadfd841cc8",
+          "type": "moneyline",
+          "sumUntaken": 947.94,
+          "odds": -122,
+          "bet": 777,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.830Z",
+          "gameStartExpiry": true,
+          "participantID": "67858f00cc33c4d8df9f14fb"
+        },
+        {
+          "id": "6a4657e38884eaadfd841cca",
+          "type": "moneyline",
+          "sumUntaken": 332.5,
+          "odds": -133,
+          "bet": 250,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.830Z",
+          "gameStartExpiry": true,
+          "participantID": "67858f00cc33c4d8df9f14fb"
+        }
+      ],
+      "homeMoneylines": [
+        {
+          "id": "6a4657e38884eaadfd841cb2",
+          "type": "moneyline",
+          "sumUntaken": 244.2,
+          "odds": -110,
+          "bet": 222,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.821Z",
+          "gameStartExpiry": true,
+          "participantID": "62807426c2ccb22f87b019fc"
+        },
+        {
+          "id": "6a4657e6459b4ddd936ddf83",
+          "type": "moneyline",
+          "sumUntaken": 246.42,
+          "odds": -111,
+          "bet": 222,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": 0,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:58.191Z",
+          "gameStartExpiry": true,
+          "participantID": "62807426c2ccb22f87b019fc"
+        },
+        {
+          "id": "6a4657e38884eaadfd841cb4",
+          "type": "moneyline",
+          "sumUntaken": 947.94,
+          "odds": -122,
+          "bet": 777,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.821Z",
+          "gameStartExpiry": true,
+          "participantID": "62807426c2ccb22f87b019fc"
+        },
+        {
+          "id": "6a4657e38884eaadfd841cb6",
+          "type": "moneyline",
+          "sumUntaken": 332.5,
+          "odds": -133,
+          "bet": 250,
+          "gameID": "6a430b758884eaadfdd59383",
+          "takenRatio": null,
+          "expiry": null,
+          "createdAt": "2026-07-02T12:21:55.821Z",
+          "gameStartExpiry": true,
+          "participantID": "62807426c2ccb22f87b019fc"
+        }
+      ],
+      "awaySpreads": [],
+      "homeSpreads": [],
+      "over": [],
+      "under": [],
+      "openInterest": 2942,
+      "mainHomeSpread": 0,
+      "mainAwaySpread": 0,
+      "mainTotal": 0,
+      "matchedVolume": 0,
+      "matchedVolumeByMarket": {
+        "moneyline": 0,
+        "moneyline1x2": {
+          "62807426c2ccb22f87b019fc": 0,
+          "67858f00cc33c4d8df9f14fb": 0,
+          "draw": 0
+        },
+        "byAwaySpread": {},
+        "byTotal": {}
+      },
+      "rootGameMatchedVolumeIncludingChildren": 0,
+      "matchedVolumeGameType": "root"
+    }
+  ],
+  "sampleClosed": [],
+  "gameCount": 390
+}

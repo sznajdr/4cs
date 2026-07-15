@@ -1,0 +1,24 @@
+{
+  "name": "4cs",
+  "version": "0.1.0",
+  "description": "Headless daemon + CLI for the 4casters betting exchange: orderbook polling, discovery, account reads, and order placement.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "4caster": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/daemon.js",
+    "cli": "node dist/cli.js",
+    "test": "npm run build && node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.5.3"
+  }
+}

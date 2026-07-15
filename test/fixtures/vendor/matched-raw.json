@@ -1,0 +1,113 @@
+{
+  "id": "290032d0-59ab-4ff6-95ee-e194c08c42e4",
+  "ok": true,
+  "ts": 1782997220375,
+  "result": {
+    "matched": {
+      "matchedBets": [
+        {
+          "game": {
+            "isSpecials": false,
+            "eventName": "KAREN KHACHANOV VS YANNICK HANFMANN",
+            "tournamentName": null,
+            "periodName": "Full Time",
+            "id": "6a4404d2349005b9eb17f3e0",
+            "ended": false,
+            "league": "ATP",
+            "live": false,
+            "start": "2026-07-02T13:15:00.000Z",
+            "sport": "tennis",
+            "participants": [
+              {
+                "id": "5e135b5fc24f313becc65bd2",
+                "longName": "Karen Khachanov",
+                "shortName": "Khachanov",
+                "homeAway": "away",
+                "rotationNumber": "8165",
+                "futuresSide": ""
+              },
+              {
+                "id": "6129353543f75397724c2a6b",
+                "longName": "Yannick Hanfmann",
+                "shortName": "Hanfmann",
+                "homeAway": "home",
+                "rotationNumber": "8166",
+                "futuresSide": ""
+              }
+            ]
+          },
+          "id": "6a4622a2459b4ddd936a0b77",
+          "graded": false,
+          "type": "moneyline",
+          "bet": 5,
+          "txID": "6a46411e459b4ddd936c080e",
+          "closed": false,
+          "createdAt": "2026-07-02T10:44:46.916Z",
+          "origin": "wager",
+          "adminRefund": false,
+          "wagerRequestID": "6a46411e459b4ddd936c080d",
+          "userReference": "cli-1782989081392",
+          "ticketNumber": "8e12b1ff9bd54f1a4015a0573fb06b55",
+          "cancelled": false,
+          "odds": 140,
+          "participantID": "6129353543f75397724c2a6b",
+          "platform": "api",
+          "matchedTime": "2026-07-02T10:44:46.916Z",
+          "risk": "5.05",
+          "win": "6.93"
+        },
+        {
+          "game": {
+            "isSpecials": false,
+            "eventName": "KAREN KHACHANOV VS YANNICK HANFMANN",
+            "tournamentName": null,
+            "periodName": "Full Time",
+            "id": "6a4404d2349005b9eb17f3e0",
+            "ended": false,
+            "league": "ATP",
+            "live": false,
+            "start": "2026-07-02T13:15:00.000Z",
+            "sport": "tennis",
+            "participants": [
+              {
+                "id": "5e135b5fc24f313becc65bd2",
+                "longName": "Karen Khachanov",
+                "shortName": "Khachanov",
+                "homeAway": "away",
+                "rotationNumber": "8165",
+                "futuresSide": ""
+              },
+              {
+                "id": "6129353543f75397724c2a6b",
+                "longName": "Yannick Hanfmann",
+                "shortName": "Hanfmann",
+                "homeAway": "home",
+                "rotationNumber": "8166",
+                "futuresSide": ""
+              }
+            ]
+          },
+          "id": "6a4641fc459b4ddd936c1644",
+          "graded": false,
+          "type": "moneyline",
+          "bet": 5,
+          "txID": "6a464373459b4ddd936c2dde",
+          "closed": false,
+          "createdAt": "2026-07-02T10:54:43.774Z",
+          "origin": "wager",
+          "adminRefund": false,
+          "wagerRequestID": "6a464373459b4ddd936c2ddd",
+          "userReference": "cli-1782989683476",
+          "ticketNumber": "58ef9aeb1ace6c8721360a1a9efd0c9e",
+          "cancelled": false,
+          "odds": 141,
+          "participantID": "6129353543f75397724c2a6b",
+          "platform": "api",
+          "matchedTime": "2026-07-02T10:54:43.774Z",
+          "risk": "5.05",
+          "win": "6.98"
+        }
+      ]
+    }
+  }
+}

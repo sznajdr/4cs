@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "status": "running",
+  "updatedAt": "2026-07-02T13:00:23.188Z",
+  "startedAt": "2026-07-02T11:25:35.925Z",
+  "catalogCount": 390,
+  "watchedCount": 1,
+  "balance": {
+    "id": "6743638e5f7e43c9d05440ec",
+    "username": "botszn",
+    "balance": 54.78963963963964,
+    "displayBalance": 54.78963963963964,
+    "creditLimit": 0,
+    "oddsFormat": "american",
+    "updatedAt": "2026-07-02T13:00:23.001Z"
+  },
+  "config": {
+    "live": true,
+    "maxBet": 5,
+    "pollBalanceMs": 5000,
+    "pollOrderbookMs": 8000,
+    "pollOrdersMs": 5000,
+    "baseUrl": "https://api.4casters.io",
+    "tokenConfigured": true
+  },
+  "alerts": [
+    {
+      "id": "69911f66-aace-49e4-9b52-5ea35e9480a4",
+      "ts": 1782989188644,
+      "level": "error",
+      "code": "command_failed",
+      "message": "Command failed: cancel",
+      "detail": "404 Not Found: {\"error\":{\"message\":\"Order not found: 6a4622a2459b4ddd936a0b77\",\"code\":404}}"
+    }
+  ]
+}
