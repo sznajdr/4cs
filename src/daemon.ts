@@ -16,24 +16,36 @@ import {
   cancelAllForGame,
   cancelAllForLeague,
   cancelAllOrders,
+  cancelByReference,
   cancelMultiple,
+  getAffiliateCommission,
+  getAveragePrice,
   getAvailableLeagues,
+  getBetById,
+  getBetByWagerRequestId,
   getBetByUserReference,
+  getGradedWagers,
   getGameLiability,
+  getGamesIndex,
   getMatchedBets,
   getUnmatched,
   cancelOrder,
   getGames,
   getMe,
   getOrdersForGame,
+  getOrderbookForGame,
+  getParticipants,
+  getSingleOrderbook,
   isRateLimitError,
+  lookupOrder,
   placeOrders,
+  sendOrdersHeartbeat,
   setRateLimitedHandler,
   setToken,
   setUnauthorizedHandler,
 } from './api/rest.js';
 import { PollScheduler } from './scheduler/pollScheduler.js';
-import { buildPositionsSnapshot } from './positions/normalize.js';
+import { buildPositionsSnapshot, pruneRuntimeCaches } from './positions/normalize.js';
 import { DEFAULT_LEAGUES } from './lib/leagues.js';
 import type { CancelResult, PlaceMarketType, PlaceV3Order, UserProfile } from './api/types.js';
 import { OrderDedupe } from './lib/orderDedupe.js';
@@ -44,13 +56,11 @@ import {
   type AlertEntry,
   type BalanceSnapshot,
   type DaemonStatus,
+  type OrderLifecycleRecord,
+  type SettlementJournalEntry,
   type StateSnapshot,
 } from './state.js';
 import { log } from './log.js';
-
-const EDIT_ORDER_DISABLED =
-  'edit-order is disabled: /session/editOrder cancels-then-replaces and its replacement-stake ' +
-  'field is undocumented — a wrong payload cancels your order without replacing it. Use `cancel` then `place`.';
 
 interface PlacePayload {
   order: PlaceV3Order;
@@ -76,6 +86,17 @@ interface GradedPayload {
   gameID?: string;
 }
 
+interface PnlPayload { startDate?: string; endDate?: string; }
+interface LookupPayload { orderID: string; }
+interface BetPayload { id?: string; txID?: string; }
+interface WagerRequestPayload { wagerRequestID: string; }
+interface CancelReferencePayload { gameID: string; userReferences: string[]; }
+interface ParticipantsPayload { active?: boolean; }
+interface GamesIndexPayload { league: string; sport?: string; }
+interface AveragePricePayload { leagueRequested: string; }
+interface SingleOrderbookPayload { gameID: string; }
+interface AffiliatePayload { fromDate?: string; toDate?: string; }
+
 interface LiabilityPayload {
   gameID: string;
 }
@@ -93,6 +114,7 @@ interface EditOrderPayload {
   odds: number;
   bet: number;
   confirm?: boolean;
+  confirmReplace?: boolean;
 }
 
 class FourcasterDaemon {
@@ -143,6 +165,13 @@ class FourcasterDaemon {
     this.scheduler.register({ name: 'balance', intervalMs: this.config.pollBalanceMs, run: () => this.refreshBalance() });
     this.scheduler.register({ name: 'orders', intervalMs: this.config.pollOrdersMs, run: () => this.refreshWatchedOrders() });
     this.scheduler.register({ name: 'positions', intervalMs: this.config.pollPositionsMs, run: () => this.refreshPositions() });
+    // Settlement is account accounting, not market transport: keep it far away from the 8s book loop.
+    this.scheduler.register({ name: 'settlement', intervalMs: this.config.pollSettlementMs, run: () => this.refreshSettlements() });
+    if (this.config.live && this.config.heartbeatSec > 5) {
+      const intervalMs = Math.max(1_000, Math.floor(this.config.heartbeatSec * 1_000 / 3));
+      this.scheduler.register({ name: 'heartbeat', intervalMs, run: () => this.sendHeartbeatIfNeeded(), timeoutMs: Math.min(15_000, intervalMs) });
+      this.addAlert('warning', 'heartbeat_enabled', `Orders heartbeat enabled: all account orders cancel after ${this.config.heartbeatSec}s without a heartbeat`);
+    }
 
     // Command scanning stays frequent; exchange writes still flow through the guarded handlers.
     this.timers.push(setInterval(() => void this.scanCommands(), 250));
@@ -222,14 +251,21 @@ class FourcasterDaemon {
       return;
     }
     this.state.alerts = this.state.alerts.filter(alert => alert.code !== 'token_needed' && alert.code !== 'unauthorized');
-    const hasCatalogError = Boolean(this.state.catalog.lastError);
-    const hasOrderErrors = Object.values(this.state.ordersByGame).some(order => Boolean(order.lastError));
-    this.setStatus(hasCatalogError || hasOrderErrors ? 'degraded' : 'running');
+    const hasCatalogError = this.state.catalog.stale;
+    const hasBalanceError = this.state.balance?.stale === true;
+    const hasOrderErrors = Object.values(this.state.ordersByGame).some(order => order.stale);
+    const hasPositionError = this.state.positions?.stale === true;
+    const hasSettlementError = this.state.settlement.stale && this.state.settlement.lastAttemptAt !== undefined;
+    this.setStatus(hasCatalogError || hasBalanceError || hasOrderErrors || hasPositionError || hasSettlementError ? 'degraded' : 'running');
   }
 
   private async refreshCatalog(): Promise<void> {
+    const attemptAt = new Date().toISOString();
+    this.state.catalog.lastAttemptAt = attemptAt;
     if (!this.hasToken()) {
       this.state.catalog.lastError = 'token_needed';
+      this.state.catalog.stale = true;
+      this.state.catalog.consecutiveErrorCount++;
       this.setStatus('token_needed');
       this.persist();
       return;
@@ -247,12 +283,17 @@ class FourcasterDaemon {
       const result = await getGames(leagues);
       const now = new Date().toISOString();
       this.commitPolledState(draft => {
+        const successfulLeagues = new Set(result.successfulLeagues);
+        const retained = draft.catalog.games.filter(game => !successfulLeagues.has(game.league));
         draft.catalog = {
-          games: result.games,
+          games: [...retained, ...result.games],
           failedLeagues: result.failedLeagues,
           updatedAt: now,
+          lastAttemptAt: attemptAt,
           lastOkAt: now,
-          ...(result.failedLeagues.length ? { lastError: `Failed leagues: ${result.failedLeagues.join(', ')}` } : {}),
+          lastError: result.failedLeagues.length ? `Failed leagues: ${result.failedLeagues.join(', ')}` : undefined,
+          stale: result.failedLeagues.length > 0,
+          consecutiveErrorCount: result.failedLeagues.length ? draft.catalog.consecutiveErrorCount + 1 : 0,
         };
       });
       if (result.failedLeagues.length) {
@@ -266,6 +307,8 @@ class FourcasterDaemon {
       if (isRateLimitError(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
       this.state.catalog.lastError = message;
+      this.state.catalog.stale = true;
+      this.state.catalog.consecutiveErrorCount++;
       this.addAlert('error', 'catalog_failed', 'Catalog polling failed', message);
       this.setStatus('degraded');
       this.persist();
@@ -274,11 +317,12 @@ class FourcasterDaemon {
 
   private async refreshBalance(): Promise<void> {
     if (!this.hasToken()) return;
+    const attemptAt = new Date().toISOString();
     try {
       const user = await getMe();
       const snapshot = this.balanceSnapshot(user);
       this.commitPolledState(draft => {
-        draft.balance = snapshot;
+        draft.balance = { ...snapshot, lastAttemptAt: attemptAt, lastOkAt: snapshot.updatedAt, stale: false, consecutiveErrorCount: 0 };
         const today = new Date().toISOString().slice(0, 10);
         if (!draft.dayOpenBalance || draft.dayOpenBalance.date !== today) {
           draft.dayOpenBalance = { date: today, balance: snapshot.balance, capturedAt: snapshot.updatedAt };
@@ -290,6 +334,12 @@ class FourcasterDaemon {
     } catch (err) {
       if (isRateLimitError(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
+      if (this.state.balance) {
+        this.state.balance.lastAttemptAt = attemptAt;
+        this.state.balance.lastError = message;
+        this.state.balance.stale = true;
+        this.state.balance.consecutiveErrorCount++;
+      }
       this.addAlert('error', 'balance_failed', 'Balance polling failed', message);
       this.setStatus('degraded');
       this.persist();
@@ -299,24 +349,34 @@ class FourcasterDaemon {
   /** Account-wide positions poll: normalize, stitch, diff, evaluate rules. Read-only. */
   private async refreshPositions(): Promise<void> {
     if (!this.hasToken()) return;
+    const attemptAt = new Date().toISOString();
     try {
       const [rawUnmatched, rawMatched] = await Promise.all([getUnmatched(), getMatchedBets()]);
       const nowIso = new Date().toISOString();
       this.commitPolledState(draft => {
-        draft.positions = buildPositionsSnapshot({
+        draft.positions = {
+          ...buildPositionsSnapshot({
           rawUnmatched,
           rawMatched,
           games: draft.catalog.games,
           prev: draft.positions,
           caches: draft.runtimeCaches,
           nowIso,
-        });
+          }),
+          lastAttemptAt: attemptAt,
+          stale: false,
+          consecutiveErrorCount: 0,
+        };
+        pruneRuntimeCaches(draft.runtimeCaches, Date.now());
       });
     } catch (err) {
       if (isRateLimitError(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
       if (this.state.positions) {
+        this.state.positions.lastAttemptAt = attemptAt;
         this.state.positions.lastError = message;
+        this.state.positions.stale = true;
+        this.state.positions.consecutiveErrorCount = (this.state.positions.consecutiveErrorCount ?? 0) + 1;
       }
       this.addAlert('warning', 'positions_failed', 'Positions polling failed', message);
       this.persist();
@@ -332,6 +392,8 @@ class FourcasterDaemon {
       creditLimit: user.creditLimit,
       oddsFormat: user.oddsFormat,
       updatedAt: new Date().toISOString(),
+      stale: false,
+      consecutiveErrorCount: 0,
     };
   }
 
@@ -349,12 +411,17 @@ class FourcasterDaemon {
 
   private async refreshOrdersForGame(gameID: string): Promise<void> {
     if (!this.hasToken()) return;
+    const attemptAt = new Date().toISOString();
     try {
       const orders = await getOrdersForGame(gameID);
       this.state.ordersByGame[gameID] = {
         unmatched: orders.unmatched ?? [],
         matched: orders.matched ?? [],
         updatedAt: new Date().toISOString(),
+        lastAttemptAt: attemptAt,
+        lastOkAt: new Date().toISOString(),
+        stale: false,
+        consecutiveErrorCount: 0,
       };
       this.state.alerts = this.state.alerts.filter(alert => alert.code !== `orders_failed_${gameID}`);
     } catch (err) {
@@ -362,10 +429,67 @@ class FourcasterDaemon {
       const message = err instanceof Error ? err.message : String(err);
       this.state.ordersByGame[gameID] = {
         ...(this.state.ordersByGame[gameID] ?? { unmatched: [], matched: [] }),
+        lastAttemptAt: attemptAt,
         lastError: message,
+        stale: true,
+        consecutiveErrorCount: (this.state.ordersByGame[gameID]?.consecutiveErrorCount ?? 0) + 1,
       };
       this.addAlert('error', `orders_failed_${gameID}`, `Order polling failed for ${gameID}`, message);
       this.setStatus('degraded');
+    }
+  }
+
+  /** A write should not wait for the next eight-second catalog cycle to refresh its game. */
+  private async refreshGameOrderbook(gameID: string): Promise<void> {
+    if (!this.hasToken() || !gameID) return;
+    try {
+      const game = await getOrderbookForGame(gameID);
+      if (!game) return;
+      const index = this.state.catalog.games.findIndex(item => item.id === gameID);
+      if (index >= 0) this.state.catalog.games[index] = game;
+      else this.state.catalog.games.push(game);
+      this.state.catalog.updatedAt = new Date().toISOString();
+      this.state.catalog.lastOkAt = this.state.catalog.updatedAt;
+      this.state.catalog.lastError = undefined;
+      this.state.catalog.stale = false;
+      this.state.catalog.consecutiveErrorCount = 0;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.addAlert('warning', `targeted_orderbook_${gameID}`, `Post-write orderbook reconcile failed for ${gameID}`, message);
+    }
+  }
+
+  /** Hourly exchange-backed realized P&L snapshot; never derive settlement from balance movements. */
+  private async refreshSettlements(): Promise<void> {
+    if (!this.hasToken()) return;
+    const attemptAt = new Date().toISOString();
+    this.state.settlement.lastAttemptAt = attemptAt;
+    try {
+      const today = new Date();
+      // Include yesterday: late grading after midnight is common enough to be worth retaining.
+      const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1_000);
+      const startDate = formatExchangeDate(yesterday);
+      const endDate = formatExchangeDate(today);
+      const result = await getGradedWagers(startDate, endDate);
+      const entry = settlementEntry(result, startDate, endDate, attemptAt);
+      this.state.settlementJournal.push(entry);
+      this.state.settlement.latest = entry;
+      this.state.settlement.lastOkAt = attemptAt;
+      this.state.settlement.lastError = undefined;
+      this.state.settlement.stale = false;
+      this.state.settlement.consecutiveErrorCount = 0;
+      this.state.alerts = this.state.alerts.filter(alert => alert.code !== 'settlement_failed');
+      this.updateHealthyStatus();
+      this.persist();
+    } catch (err) {
+      if (isRateLimitError(err)) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      this.state.settlement.lastError = message;
+      this.state.settlement.stale = true;
+      this.state.settlement.consecutiveErrorCount++;
+      this.addAlert('warning', 'settlement_failed', 'Settlement P&L poll failed; prior exchange snapshot remains available', message);
+      this.updateHealthyStatus();
+      this.persist();
     }
   }
 
@@ -434,6 +558,14 @@ class FourcasterDaemon {
         return this.readMatched();
       case 'graded':
         return this.readGraded(asGraded(command.payload));
+      case 'pnl':
+        return this.readPnl(asPnl(command.payload));
+      case 'lookup':
+        return this.lookup(asLookup(command.payload));
+      case 'bet':
+        return this.readBet(asBet(command.payload));
+      case 'wagerRequest':
+        return this.readWagerRequest(asWagerRequest(command.payload));
       case 'liability':
         return this.readLiability(asLiability(command.payload));
       case 'cancelMultiple':
@@ -442,8 +574,22 @@ class FourcasterDaemon {
         return this.cancelLeagueCmd(asCancelLeague(command.payload));
       case 'cancelAllOrders':
         return this.cancelAllOrdersCmd();
+      case 'cancelByReference':
+        return this.cancelByReferenceCmd(asCancelReference(command.payload));
       case 'editOrder':
         return this.editOrderCmd(asEditOrder(command.payload));
+      case 'participants':
+        return this.readParticipants(asParticipants(command.payload));
+      case 'gamesIndex':
+        return this.readGamesIndex(asGamesIndex(command.payload));
+      case 'averagePrice':
+        return this.readAveragePrice(asAveragePrice(command.payload));
+      case 'singleOrderbook':
+        return this.readSingleOrderbook(asSingleOrderbook(command.payload));
+      case 'affiliateCommission':
+        return this.readAffiliateCommission(asAffiliate(command.payload));
+      case 'settlementJournal':
+        return this.readSettlementJournal();
       case 'refresh':
         // Route through the serialized scheduler so polls never overlap.
         this.scheduler?.requestNow('catalog');
@@ -473,6 +619,84 @@ class FourcasterDaemon {
     return getBetByUserReference(payload.userReference, payload.gameID);
   }
 
+  private async readPnl(payload: PnlPayload): Promise<unknown> {
+    this.requireToken('pnl');
+    return getGradedWagers(payload.startDate, payload.endDate);
+  }
+
+  private async lookup(payload: LookupPayload): Promise<unknown> {
+    this.requireToken('lookup');
+    const order = await lookupOrder(payload.orderID);
+    const record = this.state.lifecycle.find(item => item.orderIDs.includes(payload.orderID));
+    if (record) {
+      record.lastLookup = order;
+      record.updatedAt = new Date().toISOString();
+      record.status = order.cancelled ? 'cancelled' : record.status;
+      this.persist();
+    }
+    return order;
+  }
+
+  private async readBet(payload: BetPayload): Promise<unknown> {
+    this.requireToken('bet');
+    return getBetById(payload);
+  }
+
+  private async readWagerRequest(payload: WagerRequestPayload): Promise<unknown> {
+    this.requireToken('wager-request');
+    return getBetByWagerRequestId(payload.wagerRequestID);
+  }
+
+  private async readParticipants(payload: ParticipantsPayload): Promise<unknown> {
+    this.requireToken('participants');
+    const attemptAt = new Date().toISOString();
+    this.state.participants.lastAttemptAt = attemptAt;
+    try {
+      const items = await getParticipants(payload.active);
+      this.state.participants = {
+        active: payload.active,
+        items,
+        lastAttemptAt: attemptAt,
+        lastOkAt: new Date().toISOString(),
+        stale: false,
+        consecutiveErrorCount: 0,
+      };
+      this.persist();
+      return { participants: items, freshness: this.state.participants };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.state.participants.lastError = message;
+      this.state.participants.stale = true;
+      this.state.participants.consecutiveErrorCount++;
+      this.persist();
+      throw err;
+    }
+  }
+
+  private async readGamesIndex(payload: GamesIndexPayload): Promise<unknown> {
+    this.requireToken('discover-games');
+    return { games: await getGamesIndex(payload.league, payload.sport) };
+  }
+
+  private async readAveragePrice(payload: AveragePricePayload): Promise<unknown> {
+    this.requireToken('average-price');
+    return getAveragePrice(payload.leagueRequested);
+  }
+
+  private async readSingleOrderbook(payload: SingleOrderbookPayload): Promise<unknown> {
+    this.requireToken('single-orderbook');
+    return getSingleOrderbook(payload.gameID);
+  }
+
+  private async readAffiliateCommission(payload: AffiliatePayload): Promise<unknown> {
+    this.requireToken('affiliate-commission');
+    return getAffiliateCommission(payload.fromDate, payload.toDate);
+  }
+
+  private readSettlementJournal(): unknown {
+    return { settlement: this.state.settlement, entries: this.state.settlementJournal };
+  }
+
   private async readLiability(payload: LiabilityPayload): Promise<unknown> {
     this.requireToken('liability');
     const liability = await getGameLiability(payload.gameID);
@@ -489,7 +713,7 @@ class FourcasterDaemon {
     this.requireToken('cancel-multiple');
     const result = await cancelMultiple(payload.sessionIDs);
     this.record(makeActivity('CANCEL', `Cancelled ${payload.sessionIDs.length} orders`, JSON.stringify(result)));
-    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshBalance()]);
+    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshPositions(), this.refreshBalance()]);
     this.persist();
     return { submitted: true, dryRun: false, result };
   }
@@ -503,7 +727,7 @@ class FourcasterDaemon {
     this.requireToken('cancel-all-league');
     const result = await cancelAllForLeague(payload.league);
     this.record(makeActivity('CANCEL', `Cancelled all orders for league ${payload.league}`, JSON.stringify(result)));
-    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshBalance()]);
+    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshPositions(), this.refreshBalance()]);
     this.persist();
     return { submitted: true, dryRun: false, result };
   }
@@ -517,7 +741,23 @@ class FourcasterDaemon {
     this.requireToken('cancel-all-orders');
     const result = await cancelAllOrders();
     this.record(makeActivity('CANCEL', 'Cancelled all open orders', JSON.stringify(result)));
-    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshBalance()]);
+    await Promise.allSettled([...this.state.watchList.map(id => this.refreshOrdersForGame(id)), this.refreshPositions(), this.refreshBalance()]);
+    this.persist();
+    return { submitted: true, dryRun: false, result };
+  }
+
+  private async cancelByReferenceCmd(payload: CancelReferencePayload): Promise<unknown> {
+    if (payload.userReferences.length === 0) throw new Error('userReferences must be a non-empty list');
+    if (!this.config.live) {
+      this.record(makeActivity('CANCEL', 'Dry-run cancel-by-reference preview', JSON.stringify(payload)));
+      this.persist();
+      return { submitted: false, dryRun: true, dryRunReason: 'LIVE=0', ...payload };
+    }
+    this.requireToken('cancel-by-reference');
+    const result = await cancelByReference(payload.gameID, payload.userReferences);
+    this.markLifecycleCancelledByReference(payload.userReferences);
+    this.record(makeActivity('CANCEL', `Cancelled ${payload.userReferences.length} references for ${payload.gameID}`, JSON.stringify(result)));
+    await Promise.allSettled([this.refreshGameOrderbook(payload.gameID), this.refreshOrdersForGame(payload.gameID), this.refreshPositions(), this.refreshBalance()]);
     this.persist();
     return { submitted: true, dryRun: false, result };
   }
@@ -528,7 +768,7 @@ class FourcasterDaemon {
     if (payload.bet > this.config.maxBet) throw new Error(`bet ${payload.bet} exceeds MAX_BET ${this.config.maxBet}`);
 
     const confirm = payload.confirm === true;
-    const dryRunReason = !this.config.live ? 'LIVE=0' : !confirm ? 'missing --confirm' : null;
+    const dryRunReason = !this.config.live ? 'LIVE=0' : !confirm ? 'missing --confirm' : !payload.confirmReplace ? 'missing --confirm-replace' : null;
     if (dryRunReason) {
       this.record(makeActivity('ORDER', 'Dry-run edit-order preview', JSON.stringify(payload)));
       this.persist();
@@ -536,16 +776,49 @@ class FourcasterDaemon {
         submitted: false,
         dryRun: true,
         dryRunReason,
-        disabledLive: true,
-        note: EDIT_ORDER_DISABLED,
-        request: { sessionID: payload.sessionID, odds: payload.odds, bet: payload.bet },
+        requiresConfirmReplace: true,
+        note: 'edit-order is cancel-and-replace; the new volume is not the remaining volume after partial fills',
+        request: { sessionID: payload.sessionID, replacementOdds: payload.odds, replacementBet: payload.bet },
       };
     }
-    // Live edit-order is intentionally disabled. Verified live (2026-07): /session/editOrder
-    // is cancel-then-replace, and its replacement-stake field is NOT `bet` — a wrong guess
-    // cancels the resting order and fails the re-place, destroying the order. Until the real
-    // payload is documented, refuse the live call rather than risk a user's order.
-    throw new Error(EDIT_ORDER_DISABLED);
+    this.requireToken('edit-order');
+    const current = await lookupOrder(payload.sessionID);
+    if (current.cancelled) throw new Error('Cannot edit a cancelled order');
+    const record = this.state.lifecycle.find(item => item.orderIDs.includes(payload.sessionID));
+    if (!record) throw new Error('Guarded edit requires an order placed by this daemon (no lifecycle record found); use cancel + place explicitly');
+    record.status = 'edited';
+    record.updatedAt = new Date().toISOString();
+    record.lastLookup = current;
+
+    // Do not call the undocumented/destructive v4 endpoint. The two documented writes
+    // make the cancellation and the replacement independently observable and auditable.
+    const cancellation = await cancelOrder(payload.sessionID);
+    if (!cancellation.success) throw new Error(`Exchange did not confirm cancellation of ${payload.sessionID}`);
+    // Persist this boundary before the second write: a replacement failure must never
+    // make the ledger claim that the original order is still resting.
+    record.status = 'cancelled';
+    record.updatedAt = new Date().toISOString();
+    this.persist();
+    const replacementOrder: PlaceV3Order = {
+      ...record.order,
+      odds: payload.odds,
+      bet: payload.bet,
+      userReference: makeReplacementReference(),
+    };
+    const sessions = await placeOrders([replacementOrder]);
+    const replacement = this.addLifecycleRecord(replacementOrder, sessions, {
+      parentLifecycleID: record.id,
+      replacesOrderID: payload.sessionID,
+    });
+    record.status = 'replaced';
+    record.replacementLifecycleID = replacement.id;
+    record.updatedAt = new Date().toISOString();
+    this.record(makeActivity('ORDER', `Replaced order ${payload.sessionID}`, JSON.stringify({ cancellation, replacementOrder, sessions })));
+    const game = current.game as { id?: unknown } | undefined;
+    const gameID = typeof game?.id === 'string' ? game.id : record.gameID;
+    await Promise.allSettled([...(gameID ? [this.refreshGameOrderbook(gameID), this.refreshOrdersForGame(gameID)] : []), this.refreshPositions(), this.refreshBalance()]);
+    this.persist();
+    return { submitted: true, dryRun: false, previous: current, cancellation, replacementOrder, sessions, lifecycle: { previousID: record.id, replacementID: replacement.id } };
   }
 
   private async watchGame(gameID: string): Promise<unknown> {
@@ -626,11 +899,14 @@ class FourcasterDaemon {
       this.record(makeActivity('ERROR', 'Order rejected', JSON.stringify({ order, sessions })));
     } else {
       this.dedupe.commit(dedupeShape, dedupe.clientRef, now);
+      this.addLifecycleRecord(order, sessions);
       this.record(makeActivity('ORDER', 'Order submitted', JSON.stringify({ order, sessions })));
     }
 
     await Promise.allSettled([
+      this.refreshGameOrderbook(order.gameID),
       this.refreshOrdersForGame(order.gameID),
+      this.refreshPositions(),
       this.refreshBalance(),
     ]);
     this.persist();
@@ -653,6 +929,7 @@ class FourcasterDaemon {
     if (!this.hasToken()) throw new Error('FOURCASTER_AUTH_TOKEN is required for cancel');
 
     const result = await cancelOrder(payload.sessionID);
+    this.markLifecycleCancelled(payload.sessionID);
     this.record(makeActivity('CANCEL', `Cancelled order ${payload.sessionID}`, JSON.stringify(result)));
     await this.refreshAfterCancel(result);
     this.persist();
@@ -670,10 +947,7 @@ class FourcasterDaemon {
 
     const result = await cancelAllForGame(payload.gameID, payload.type);
     this.record(makeActivity('CANCEL', `Cancelled all orders for ${payload.gameID}`, JSON.stringify(result)));
-    await Promise.allSettled([
-      this.refreshOrdersForGame(payload.gameID),
-      this.refreshBalance(),
-    ]);
+    await Promise.allSettled([this.refreshGameOrderbook(payload.gameID), this.refreshOrdersForGame(payload.gameID), this.refreshPositions(), this.refreshBalance()]);
     this.persist();
     return { submitted: true, dryRun: false, result };
   }
@@ -681,14 +955,103 @@ class FourcasterDaemon {
   private async refreshAfterCancel(result: CancelResult): Promise<void> {
     const gameID = result.gameID;
     if (gameID) {
-      await Promise.allSettled([this.refreshOrdersForGame(gameID), this.refreshBalance()]);
+      await Promise.allSettled([this.refreshGameOrderbook(gameID), this.refreshOrdersForGame(gameID), this.refreshPositions(), this.refreshBalance()]);
       return;
     }
     await Promise.allSettled([
       ...this.state.watchList.map(id => this.refreshOrdersForGame(id)),
+      this.refreshPositions(),
       this.refreshBalance(),
     ]);
   }
+
+  private hasRestingOrders(): boolean {
+    return (this.state.positions?.unmatched.length ?? 0) > 0 || Object.values(this.state.ordersByGame).some(orders => orders.unmatched.length > 0);
+  }
+
+  private async sendHeartbeatIfNeeded(): Promise<void> {
+    if (!this.config.live || this.config.heartbeatSec <= 5 || !this.hasRestingOrders()) return;
+    this.state.heartbeat.lastAttemptAt = new Date().toISOString();
+    try {
+      await sendOrdersHeartbeat(this.config.heartbeatSec);
+      this.state.heartbeat.lastOkAt = new Date().toISOString();
+      this.state.heartbeat.lastError = undefined;
+      this.state.alerts = this.state.alerts.filter(alert => alert.code !== 'heartbeat_failed');
+      this.persist();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.state.heartbeat.lastError = message;
+      this.addAlert('error', 'heartbeat_failed', 'Orders heartbeat failed; all open account orders may be cancelled when its timeout expires', message);
+      this.persist();
+      throw err;
+    }
+  }
+
+  private addLifecycleRecord(
+    order: PlaceV3Order,
+    sessions: unknown,
+    links: Pick<OrderLifecycleRecord, 'parentLifecycleID' | 'replacesOrderID'> = {},
+  ): OrderLifecycleRecord {
+    const { orderIDs, wagerRequestIDs } = extractExchangeIds(sessions);
+    const now = new Date().toISOString();
+    const record: OrderLifecycleRecord = {
+      id: randomUUID(), createdAt: now, updatedAt: now, gameID: order.gameID,
+      userReference: order.userReference ?? '', order, orderIDs, wagerRequestIDs,
+      sessionResponse: sessions, status: 'submitted', ...links,
+    };
+    this.state.lifecycle.push(record);
+    return record;
+  }
+
+  private markLifecycleCancelled(orderID: string): void {
+    for (const record of this.state.lifecycle) {
+      if (record.orderIDs.includes(orderID)) { record.status = 'cancelled'; record.updatedAt = new Date().toISOString(); }
+    }
+  }
+
+  private markLifecycleCancelledByReference(references: string[]): void {
+    const wanted = new Set(references);
+    for (const record of this.state.lifecycle) {
+      if (wanted.has(record.userReference)) { record.status = 'cancelled'; record.updatedAt = new Date().toISOString(); }
+    }
+  }
+}
+
+function formatExchangeDate(value: Date): string {
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(value.getUTCDate()).padStart(2, '0');
+  return `${month}-${day}-${value.getUTCFullYear()}`;
+}
+
+function settlementEntry(raw: unknown, startDate: string, endDate: string, capturedAt: string): SettlementJournalEntry {
+  const data = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const wagers = Array.isArray(data.wagers) ? data.wagers : [];
+  const summary = data.summary && typeof data.summary === 'object' && !Array.isArray(data.summary)
+    ? data.summary as Record<string, unknown>
+    : undefined;
+  return { id: randomUUID(), capturedAt, startDate, endDate, wagerCount: wagers.length, ...(summary ? { summary } : {}) };
+}
+
+function makeReplacementReference(): string {
+  // Preserve the original reference in the lifecycle chain; exchange-facing references
+  // remain unique so a later cancel-by-reference cannot cancel both generations.
+  const suffix = randomUUID().replace(/-/g, '').slice(0, 8);
+  return `4c-${Date.now()}-replace-${suffix}`;
+}
+
+function extractExchangeIds(value: unknown): { orderIDs: string[]; wagerRequestIDs: string[] } {
+  const orderIDs = new Set<string>();
+  const wagerRequestIDs = new Set<string>();
+  const walk = (item: unknown): void => {
+    if (Array.isArray(item)) { item.forEach(walk); return; }
+    if (!item || typeof item !== 'object') return;
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.orderID === 'string') orderIDs.add(obj.orderID);
+    if (typeof obj.wagerRequestID === 'string') wagerRequestIDs.add(obj.wagerRequestID);
+    Object.values(obj).forEach(walk);
+  };
+  walk(value);
+  return { orderIDs: [...orderIDs], wagerRequestIDs: [...wagerRequestIDs] };
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -742,6 +1105,32 @@ function asGraded(value: unknown): GradedPayload {
   };
 }
 
+function asPnl(value: unknown): PnlPayload {
+  const obj = asObject(value);
+  return {
+    ...(typeof obj.startDate === 'string' && obj.startDate ? { startDate: obj.startDate } : {}),
+    ...(typeof obj.endDate === 'string' && obj.endDate ? { endDate: obj.endDate } : {}),
+  };
+}
+
+function asLookup(value: unknown): LookupPayload {
+  const obj = asObject(value);
+  return { orderID: asString(obj.orderID, 'orderID') };
+}
+
+function asBet(value: unknown): BetPayload {
+  const obj = asObject(value);
+  const id = typeof obj.id === 'string' && obj.id ? obj.id : undefined;
+  const txID = typeof obj.txID === 'string' && obj.txID ? obj.txID : undefined;
+  if ((id ? 1 : 0) + (txID ? 1 : 0) !== 1) throw new Error('Pass exactly one of id or txID');
+  return { ...(id ? { id } : {}), ...(txID ? { txID } : {}) };
+}
+
+function asWagerRequest(value: unknown): WagerRequestPayload {
+  const obj = asObject(value);
+  return { wagerRequestID: asString(obj.wagerRequestID, 'wagerRequestID') };
+}
+
 function asLiability(value: unknown): LiabilityPayload {
   const obj = asObject(value);
   return { gameID: asString(obj.gameID, 'gameID') };
@@ -760,6 +1149,46 @@ function asCancelLeague(value: unknown): CancelLeaguePayload {
   return { league: asString(obj.league, 'league') };
 }
 
+function asCancelReference(value: unknown): CancelReferencePayload {
+  const obj = asObject(value);
+  if (!Array.isArray(obj.userReferences) || obj.userReferences.some(item => typeof item !== 'string' || !item.trim())) {
+    throw new Error('userReferences must be a non-empty array of strings');
+  }
+  return { gameID: asString(obj.gameID, 'gameID'), userReferences: obj.userReferences as string[] };
+}
+
+function asParticipants(value: unknown): ParticipantsPayload {
+  const obj = asObject(value);
+  if (obj.active !== undefined && typeof obj.active !== 'boolean') throw new Error('active must be a boolean');
+  return obj.active === undefined ? {} : { active: obj.active };
+}
+
+function asGamesIndex(value: unknown): GamesIndexPayload {
+  const obj = asObject(value);
+  return {
+    league: asString(obj.league, 'league'),
+    ...(typeof obj.sport === 'string' && obj.sport ? { sport: obj.sport } : {}),
+  };
+}
+
+function asAveragePrice(value: unknown): AveragePricePayload {
+  const obj = asObject(value);
+  return { leagueRequested: asString(obj.leagueRequested, 'leagueRequested') };
+}
+
+function asSingleOrderbook(value: unknown): SingleOrderbookPayload {
+  const obj = asObject(value);
+  return { gameID: asString(obj.gameID, 'gameID') };
+}
+
+function asAffiliate(value: unknown): AffiliatePayload {
+  const obj = asObject(value);
+  return {
+    ...(typeof obj.fromDate === 'string' && obj.fromDate ? { fromDate: obj.fromDate } : {}),
+    ...(typeof obj.toDate === 'string' && obj.toDate ? { toDate: obj.toDate } : {}),
+  };
+}
+
 function asEditOrder(value: unknown): EditOrderPayload {
   const obj = asObject(value);
   if (typeof obj.odds !== 'number') throw new Error('odds must be a number');
@@ -769,6 +1198,7 @@ function asEditOrder(value: unknown): EditOrderPayload {
     odds: obj.odds,
     bet: obj.bet,
     confirm: obj.confirm === true,
+    confirmReplace: obj.confirmReplace === true,
   };
 }
 

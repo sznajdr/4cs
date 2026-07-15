@@ -19,6 +19,7 @@ then `.env.local` in the project root (existing process env always wins). See
 | `LIVE` | `0` | `0` = place/cancel/edit return a dry-run preview and never hit the exchange. `1` = real writes. |
 | `MAX_BET` | `5` | Hard stake cap enforced before any live placement. |
 | `DEBUG` | unset | Set to any value for verbose logging. |
+| `FOURCASTER_HEARTBEAT_SEC` | `0` | Opt-in account-wide dead-man switch. Must be >5 and requires `LIVE=1`; if daemon heartbeats stop before the timeout expires, the exchange cancels every open order on the account. |
 
 ## Runtime directories
 
@@ -38,6 +39,7 @@ Relative paths resolve against the project root.
 | `POLL_BALANCE_MS` | `5000` |
 | `POLL_ORDERS_MS` | `5000` |
 | `POLL_POSITIONS_MS` | `30000` |
+| `POLL_SETTLEMENT_MS` | `3600000` | Exchange-backed settled-wager/P&L snapshot interval (one hour); separate from orderbook polling. |
 
 ## Fees (optional, local math only)
 

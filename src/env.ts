@@ -90,6 +90,10 @@ export interface RuntimeConfig {
   commandsDir: string;
   responsesDir: string;
   pollPositionsMs: number;
+  /** Settled-wager accounting is intentionally slow and separate from market polling. */
+  pollSettlementMs: number;
+  /** 0 disables the account-wide dead-man switch. Values must be > 5. */
+  heartbeatSec: number;
   hedgeProfitBuffer: number;
   commissionTakerRate: number;
 }
@@ -110,6 +114,13 @@ export function getRuntimeConfig(): RuntimeConfig {
     commandsDir: env('FOURCASTER_COMMANDS_DIR', ['4CASTER_COMMANDS_DIR']) ?? resolve(root, 'commands'),
     responsesDir: env('FOURCASTER_RESPONSES_DIR', ['4CASTER_RESPONSES_DIR']) ?? resolve(root, 'responses'),
     pollPositionsMs: envInt('POLL_POSITIONS_MS', 30_000),
+    pollSettlementMs: envInt('POLL_SETTLEMENT_MS', 3_600_000),
+    heartbeatSec: (() => {
+      const raw = env('FOURCASTER_HEARTBEAT_SEC');
+      if (raw === undefined) return 0;
+      const value = Number.parseInt(raw, 10);
+      return Number.isFinite(value) && value > 5 ? value : 0;
+    })(),
     hedgeProfitBuffer: envFloatMin0('HEDGE_PROFIT_BUFFER', 0.25),
     commissionTakerRate: envFloatMin0('COMMISSION_TAKER_RATE', 0.01),
   };

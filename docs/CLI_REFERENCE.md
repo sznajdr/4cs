@@ -81,8 +81,27 @@ Open unmatched orders straight from the exchange.
 ### `matched`
 Matched bets straight from the exchange.
 
-### `graded --user-reference <ref> [--game-id <id>]`
-Look up a graded bet by the client reference you placed it with.
+### `by-reference --user-reference <ref> [--game-id <id>]`
+Look up all unmatched, matched, and graded records tied to a client reference.
+
+### `pnl [--from MM-DD-YYYY] [--to MM-DD-YYYY]`
+Return exchange-calculated settled-wager P&L and volume for the requested game-start date range.
+
+### `settlement-journal [--tail 20]`
+Read cached, exchange-backed settlement snapshots. The daemon polls the prior two
+UTC game-start dates at `POLL_SETTLEMENT_MS` (one hour by default) and retains a
+bounded append-only journal. It never infers realized P&L from balance changes.
+
+### `lookup --order-id <id>` / `bet --id <id> | --tx-id <id>` / `wager-request --id <id>`
+Read the current order state, one individual bet, or all resulting records from one placement request.
+
+### `participants [--active]`, `discover-games --league <LEAGUE|upcoming>`, `average-price --league <LEAGUE>`, `single-orderbook --game-id <id>`
+Direct market discovery reads. `participants` also refreshes its persisted optional
+participant cache with the normal freshness metadata. None alters the cached
+eight-second orderbook cadence.
+
+### `affiliate-commission [--from MM-DD-YYYY] [--to MM-DD-YYYY]`
+Read referral commission for the selected date range.
 
 ### `liability --game-id <id>`
 Current liability for a game.
@@ -99,7 +118,7 @@ Two-way markets:
 ```
 place --game-id <id> --market moneyline|spread|total --side home|away|over|under \
       --odds <american|decimal> --bet <amount> [--number <line>] \
-      [--order-type limit|post|postArb|fillAndKill] [--confirm]
+      [--expires-in <minutes>] [--order-type limit|post|postArb|fillAndKill] [--confirm]
 ```
 Three-way (1x2):
 ```
@@ -119,14 +138,21 @@ Cancel all orders for a game (optionally one market type).
 ### `cancel-multiple --session-ids <id,id,id>`
 Cancel a comma-separated list of orders.
 
+### `cancel-ref --game-id <id> --user-references <ref,ref>`
+Cancel open orders for a game using the client references assigned at placement.
+
 ### `cancel-all-league --league <LEAGUE>`
 Cancel every order across a league.
 
 ### `cancel-all-orders`
 Cancel every open order on the account.
 
-### `edit-order` — **disabled for live use**
-Returns a dry-run/disabled response explaining why. Use `cancel` then `place`.
+### `edit-order --session-id <id> --odds <american|decimal> --bet <amount> --confirm --confirm-replace`
+Replaces a daemon-created resting order through the established cancel and place
+endpoints. The daemon first does a fresh lookup, then requires two confirmations before
+the cancellation. Cancellation happens before placement, so a failed replacement leaves
+the original order cancelled. It records both generations as linked lifecycle records;
+partial-fill volume requires particular care.
 
 ---
 

@@ -57,9 +57,10 @@ The essentials:
 - **`MAX_BET`** is enforced by the daemon before any live placement.
 - **Tokens are manual.** With no token the daemon reports `token_needed` and all
   account/trading calls are disabled.
-- **`edit-order` is intentionally disabled for live use** — the exchange's edit
-  endpoint is cancel-then-replace with an undocumented replacement-stake field;
-  use `cancel` then `place` instead.
+- **`edit-order` requires two confirmations** — it cancels the existing daemon-created
+  order, then submits the replacement and links both lifecycle records. If the
+  replacement is rejected, the original order remains cancelled. Use `cancel` +
+  `place` if you prefer explicit control.
 
 ## CLI commands
 
@@ -84,8 +85,18 @@ Live account reads (daemon issues a fresh REST call):
 ```
 unmatched                    open unmatched orders
 matched                      matched bets
-graded --user-reference <ref> [--game-id <id>]
+by-reference --user-reference <ref> [--game-id <id>]
+pnl [--from MM-DD-YYYY] [--to MM-DD-YYYY]
+lookup --order-id <id>
+bet --id <id> | --tx-id <id>
+wager-request --id <wagerRequestID>
 liability --game-id <id>
+participants [--active]
+discover-games --league <LEAGUE|upcoming> [--sport <sport>]
+average-price --league <LEAGUE>
+single-orderbook --game-id <id>
+affiliate-commission [--from MM-DD-YYYY] [--to MM-DD-YYYY]
+settlement-journal [--tail 20]
 ```
 
 Writes (routed to the daemon; dry-run unless LIVE=1 [+ --confirm for place]):
@@ -95,15 +106,28 @@ watch   --game-id <id>       start polling a game's orders
 unwatch --game-id <id>
 place   --game-id <id> --market moneyline|spread|total --side home|away|over|under
         --odds <american|decimal> --bet <amount> [--number <line>]
-        [--order-type limit|post|postArb|fillAndKill] [--confirm]
+        [--expires-in <minutes>] [--order-type limit|post|postArb|fillAndKill] [--confirm]
 place   --game-id <id> --market moneyline1x2 --side yes|no --outcome draw|home|away ...
 cancel  --session-id <id>
 cancel-all --game-id <id> [--type moneyline|spread|total|moneyline1x2]
 cancel-multiple --session-ids <id,id,id>
+cancel-ref --game-id <id> --user-references <ref,ref>
 cancel-all-league --league <LEAGUE>
 cancel-all-orders
-edit-order ...               # DISABLED live: use cancel + place
+edit-order --session-id <id> --odds <american|decimal> --bet <amount> --confirm --confirm-replace
 ```
+
+`edit-order` is deliberately two-confirmation. It uses a fresh lookup, then cancel +
+place, and links both lifecycle records. The cancellation happens before the replacement;
+if placement fails, the original order stays cancelled. For a partial fill, the
+replacement volume is the full new stake, not the remaining volume.
+
+The account-wide heartbeat is enabled only when `LIVE=1` and
+`FOURCASTER_HEARTBEAT_SEC` is set to a value greater than five.
+
+The eight-second orderbook cadence is unchanged. Settlement accounting is a separate
+hourly exchange-backed journal (`POLL_SETTLEMENT_MS`), and every cached poll slice
+exposes freshness (`lastAttemptAt`, `lastOkAt`, `stale`, and consecutive error count).
 
 Run `node dist/cli.js --help` for the authoritative list. See
 [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) for details and odds format

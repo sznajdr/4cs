@@ -3,8 +3,11 @@ dist/
 state/
 .env
 .env.local
+.env.*.local
 commands/*
 responses/*
 !commands/.gitkeep
 !responses/.gitkeep
 *.log
+*.tmp
+.claude/

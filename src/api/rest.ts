@@ -17,6 +17,8 @@ import type {
   MatchedBetsResponse,
   GameLiabilityResponse,
   BetByUserReferenceResponse,
+  GradedWagersResponse,
+  LookupOrderResponse,
 } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -137,8 +139,10 @@ function sleep(ms: number) {
 }
 
 function normalizeUser(user: UserProfile): UserProfile {
-  user.balance = user.displayBalance ?? user.balance ?? 0;
-  return user;
+  return {
+    ...user,
+    balance: user.displayBalance ?? user.balance ?? 0,
+  };
 }
 
 export async function login(username: string, password: string): Promise<UserProfile> {
@@ -210,11 +214,51 @@ export async function getBetByUserReference(
   return data.data ?? {};
 }
 
+/** Settled wagers and exchange-calculated P&L for a game-start date range. */
+export async function getGradedWagers(startDate?: string, endDate?: string): Promise<GradedWagersResponse['data']> {
+  const params: Record<string, string> = {};
+  if (startDate) params.startDate = startDate;
+  if (endDate) params.endDate = endDate;
+  const data = await request<GradedWagersResponse>('GET', '/user/getGradedWagers', undefined, params);
+  return data.data ?? {};
+}
+
+/** Current exchange state of one order, including matched/unmatched risk. */
+export async function lookupOrder(orderID: string): Promise<LookupOrderResponse['data']['order']> {
+  const data = await request<LookupOrderResponse>('GET', '/session/lookupOrder', undefined, { orderID });
+  return data.data.order;
+}
+
+/** A single matched, graded, or open bet. The endpoint returns the bet at top level. */
+export async function getBetById(args: { id?: string; txID?: string }): Promise<unknown> {
+  if ((args.id ? 1 : 0) + (args.txID ? 1 : 0) !== 1) throw new Error('Pass exactly one of id or txID');
+  const params: Record<string, string> = args.id ? { id: args.id } : { txID: args.txID! };
+  return request<unknown>('GET', '/user/getBetByID', undefined, params);
+}
+
+/** All matched/graded bet records resulting from one placed order. */
+export async function getBetByWagerRequestId(wagerRequestID: string): Promise<unknown> {
+  return request<unknown>('GET', '/user/getBetByWagerRequestID', undefined, { wagerRequestID });
+}
+
+/** Account-wide dead-man switch. If calls stop before timeout, every open order is cancelled. */
+export async function sendOrdersHeartbeat(timeout: number): Promise<unknown> {
+  if (!Number.isFinite(timeout) || timeout <= 5) throw new Error('heartbeat timeout must be greater than 5 seconds');
+  const data = await request<{ data?: unknown }>('POST', '/user/ordersHeartbeat', { timeout });
+  return data.data ?? data;
+}
+
 // --- Bulk cancels & edit (writes — all guarded by LIVE/MAX_BET/confirm upstream) ---
 
 /** Cancel a specific list of resting orders. Body contract confirmed from docs. */
 export async function cancelMultiple(sessionIDs: string[]): Promise<CancelResult[]> {
   const data = await request<{ data: CancelResult[] }>('POST', '/session/cancelMultiple', { sessionIDs });
+  return data.data ?? [];
+}
+
+/** Cancel this account's open orders with any of the supplied client references, scoped to one game. */
+export async function cancelByReference(gameID: string, userReferences: string[]): Promise<CancelResult[]> {
+  const data = await request<{ data: CancelResult[] }>('POST', '/session/cancelByReference', { gameID, userReferences });
   return data.data ?? [];
 }
 
@@ -235,23 +279,6 @@ export async function cancelAllOrders(): Promise<CancelResult[]> {
   return data.data ?? [];
 }
 
-/**
- * Re-price a resting order in place. DISABLED at the daemon layer — do not call.
- * Verified live (2026-07): `/session/editOrder` is cancel-then-replace, and the
- * `{ sessionID, odds, bet }` shape is WRONG — the endpoint cancelled the order then
- * failed the re-place with "bet must be greater than 0" (its replacement-stake field
- * is not `bet` and is undocumented), destroying the order. Kept only for reference;
- * the daemon refuses the live call and steers callers to cancel + place.
- */
-export async function editOrder(args: { sessionID: string; odds: number; bet: number }): Promise<unknown> {
-  const data = await request<{ data: unknown }>('POST', '/session/editOrder', {
-    sessionID: args.sessionID,
-    odds: args.odds,
-    bet: args.bet,
-  });
-  return data.data ?? null;
-}
-
 export async function getAvailableLeagues(): Promise<string[]> {
   const data = await request<{ data: { availableLeagues?: string[] } }>('GET', '/exchange/getLeagues');
   return data.data?.availableLeagues ?? [];
@@ -260,6 +287,7 @@ export async function getAvailableLeagues(): Promise<string[]> {
 export interface GetGamesResult {
   games: Game[];
   failedLeagues: string[];
+  successfulLeagues: string[];
 }
 
 export async function getGames(leagues: readonly string[] = DEFAULT_LEAGUES): Promise<GetGamesResult> {
@@ -281,9 +309,11 @@ export async function getGames(leagues: readonly string[] = DEFAULT_LEAGUES): Pr
   const games: Game[] = [];
   const seen = new Set<string>();
   const failedLeagues: string[] = [];
+  const successfulLeagues: string[] = [];
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (r.status === 'fulfilled') {
+      successfulLeagues.push(r.value.league);
       for (const g of r.value.games) {
         if (!seen.has(g.id)) {
           seen.add(g.id);
@@ -295,5 +325,47 @@ export async function getGames(leagues: readonly string[] = DEFAULT_LEAGUES): Pr
       log.warn(`getGames league ${leagues[i]} failed:`, r.reason);
     }
   }
-  return { games, failedLeagues };
+  return { games, failedLeagues, successfulLeagues };
+}
+
+/** Lightweight game discovery; use the orderbook endpoint when prices are required. */
+export async function getGamesIndex(league: string, sport?: string): Promise<Game[]> {
+  const params: Record<string, string> = { league };
+  if (sport) params.sport = sport;
+  const data = await request<{ data: { games?: Game[] } }>('GET', '/exchange/v2/getGames', undefined, params);
+  return data.data?.games ?? [];
+}
+
+/** Targeted v2 orderbook read used to reconcile the market immediately after a write. */
+export async function getOrderbookForGame(gameID: string): Promise<Game | null> {
+  const data = await request<{ data: { games?: Game[] } }>(
+    'GET',
+    '/exchange/v2/getOrderbook',
+    undefined,
+    { gameID },
+    { retries: 0, timeoutMs: ORDERBOOK_TIMEOUT_MS },
+  );
+  return data.data?.games?.[0] ?? null;
+}
+
+export async function getParticipants(active?: boolean): Promise<unknown[]> {
+  const params = active === undefined ? undefined : { active: String(active) };
+  const data = await request<{ data: { participants?: unknown[] } }>('GET', '/exchange/getParticipants', undefined, params);
+  return data.data?.participants ?? [];
+}
+
+export async function getAveragePrice(leagueRequested: string): Promise<unknown> {
+  return request<unknown>('GET', '/exchange/getOddsForAveragePrice', undefined, { leagueRequested });
+}
+
+/** Legacy nested orderbook with parent/child/prop grouping; kept as an explicit discovery read. */
+export async function getSingleOrderbook(gameID: string): Promise<unknown> {
+  return request<unknown>('GET', '/exchange/getSingleOrderbook', undefined, { gameID });
+}
+
+export async function getAffiliateCommission(fromDate?: string, toDate?: string): Promise<unknown> {
+  const params: Record<string, string> = {};
+  if (fromDate) params.fromDate = fromDate;
+  if (toDate) params.toDate = toDate;
+  return request<unknown>('GET', '/affiliate/getAffiliateCommission', undefined, params);
 }

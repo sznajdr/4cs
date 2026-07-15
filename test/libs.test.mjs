@@ -76,6 +76,16 @@ test('legacy v1 state loads with defaults for new fields (migration)', () => {
     assert.deepEqual(state.runtimeCaches.pendingSuggestions, {});
     assert.equal(state.positions, null);
     assert.equal(state.dayOpenBalance, null);
+    assert.deepEqual(state.lifecycle, []);
+    assert.equal(state.heartbeat.enabled, false);
+    assert.equal(state.heartbeat.timeoutSec, 0);
+    assert.equal(state.version, 3);
+    assert.equal(state.catalog.stale, true);
+    assert.equal(state.catalog.consecutiveErrorCount, 0);
+    assert.equal(state.settlement.stale, true);
+    assert.deepEqual(state.settlementJournal, []);
+    assert.deepEqual(state.participants.items, []);
+    assert.equal(state.participants.stale, true);
     assert.deepEqual(state.watchList, ['g1']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -89,6 +99,6 @@ function defaultConfigForDir(dir) {
     root: dir, baseUrl: 'https://example.invalid', authToken: '', live: false, debug: false,
     maxBet: 5, pollBalanceMs: 5000, pollOrderbookMs: 8000, pollOrdersMs: 5000,
     stateDir: dir, commandsDir: join(dir, 'commands'), responsesDir: join(dir, 'responses'),
-    pollPositionsMs: 30000, hedgeProfitBuffer: 0.25, commissionTakerRate: 0.01,
+    pollPositionsMs: 30000, pollSettlementMs: 3600000, hedgeProfitBuffer: 0.25, commissionTakerRate: 0.01,
   };
 }

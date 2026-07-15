@@ -15,12 +15,23 @@ export type CommandAction =
   | 'unmatched'
   | 'matched'
   | 'graded'
+  | 'pnl'
+  | 'lookup'
+  | 'bet'
+  | 'wagerRequest'
   | 'liability'
+  | 'participants'
+  | 'gamesIndex'
+  | 'averagePrice'
+  | 'singleOrderbook'
+  | 'affiliateCommission'
+  | 'settlementJournal'
   // bulk cancels & edit (writes)
   | 'editOrder'
   | 'cancelMultiple'
   | 'cancelAllForLeague'
-  | 'cancelAllOrders';
+  | 'cancelAllOrders'
+  | 'cancelByReference';
 
 export interface CommandEnvelope {
   id: string;

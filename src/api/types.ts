@@ -166,8 +166,8 @@ export interface PlaceV3Order {
 }
 
 export interface CreatedSession {
-  matched?: unknown;
-  unmatched?: unknown;
+  matched?: Array<{ txID?: string; wagerRequestID?: string; userReference?: string; [key: string]: unknown }> | unknown;
+  unmatched?: { orderID?: string; wagerRequestID?: string; userReference?: string; [key: string]: unknown } | unknown;
   error?: string;
   errorType?: string;
 }
@@ -218,6 +218,15 @@ export interface BetByUserReferenceResponse {
     matched?: unknown[];
     graded?: unknown[];
   };
+}
+
+/** Vendor responses are intentionally forwarded without lossy remodeling. */
+export interface GradedWagersResponse {
+  data: { wagers?: unknown[]; summary?: { pnl?: number; volume?: number; [key: string]: unknown }; [key: string]: unknown };
+}
+
+export interface LookupOrderResponse {
+  data: { order: { id: string; cancelled?: boolean; matchedRisk?: string; unmatchedRisk?: string; [key: string]: unknown } };
 }
 
 export interface GameUpdatePayload extends Omit<Game, 'isOpen'> {

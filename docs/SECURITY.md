@@ -12,10 +12,10 @@ before setting `LIVE=1`.
    `--confirm` is treated as a dry run. This is a deliberate two-key check.
 3. **`MAX_BET` is enforced in the daemon**, not the CLI — it caps stake before any
    live order is submitted, so it cannot be bypassed by crafting a raw command.
-4. **`edit-order` is disabled for live use.** The exchange's edit endpoint is
-   cancel-then-replace with an undocumented replacement-stake field; a wrong
-   payload can cancel a resting order without replacing it. Use `cancel` +
-   `place`.
+4. **`edit-order` is a guarded cancel-and-replace.** It requires both
+   `--confirm` and `--confirm-replace`, a fresh order lookup, and a lifecycle
+   record created by this daemon. Cancellation happens before placement, so a
+   failed replacement leaves the original order cancelled.
 5. **Order de-duplication.** A short-window dedupe guard blocks accidental
    duplicate placements with the same shape.
 

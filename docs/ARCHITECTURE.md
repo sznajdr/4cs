@@ -27,9 +27,14 @@ A single class, `FourcasterDaemon`, that:
 - **Polls** the exchange through a `PollScheduler` (`src/scheduler/pollScheduler.ts`)
   that runs one exchange-facing task at a time with jittered due-times, a global
   back-off on HTTP 429, and a per-task timeout that releases the queue. Four
-  tasks are registered: `catalog`, `balance`, `orders`, `positions`.
+  tasks are registered: `catalog`, `balance`, `orders`, `positions`, and a slow
+  `settlement` task; an opt-in
+  heartbeat task is added when the account-wide dead-man switch is enabled.
 - **Persists** an atomic JSON snapshot (`state/state.json`) after every poll via
-  `writeStateAtomic` (`src/state.ts`).
+  `writeStateAtomic` (`src/state.ts`). It includes bounded lifecycle records that
+  correlate client references with exchange `orderID` and `wagerRequestID` values.
+  Every poll slice exposes attempt/success timestamps, `stale`, and consecutive-error
+  metadata. Settlement snapshots are bounded and journaled separately from balances.
 - **Scans** `commands/` every 250 ms for CLI-written command envelopes, executes
   them through guarded handlers, and writes a result to `responses/`.
 

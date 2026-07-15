@@ -50,8 +50,11 @@ export interface AccountPositionsSnapshot {
   matched: NormalizedMatchedPosition[];
   marketStates: Record<string, NormalizedMarketState>;
   updatedAt?: string;
+  lastAttemptAt?: string;
   exchangeTime?: string;
   lastOkAt?: string;
   lastError?: string;
+  stale?: boolean;
+  consecutiveErrorCount?: number;
   shapeWarnings: string[];
 }

@@ -277,9 +277,7 @@ export function pruneRuntimeCaches(caches: RuntimeCaches, now: number, activeRul
   }
   for (const [alias, target] of Object.entries(caches.sessionAliases)) {
     // Aliases are only useful while the stitched stable key is still tracked.
-    const stillTracked = Object.keys(lastSeen).length > 0;
-    if (!stillTracked) delete caches.sessionAliases[alias];
-    void target;
+    if (!(target in lastSeen)) delete caches.sessionAliases[alias];
   }
   for (const [key, pending] of Object.entries(caches.pendingSuggestions)) {
     const ruleId = key.split('::')[0];

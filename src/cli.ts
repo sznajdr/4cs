@@ -24,7 +24,7 @@ interface ParsedArgs {
   positionals: string[];
 }
 
-const BOOLEAN_FLAGS = new Set(['--confirm', '--dry-run', '--live-only']);
+const BOOLEAN_FLAGS = new Set(['--confirm', '--confirm-replace', '--dry-run', '--live-only', '--active']);
 const MARKETS = new Set(['moneyline', 'spread', 'total', 'moneyline1x2']);
 const SIDES = new Set(['home', 'away', 'over', 'under', 'yes', 'no']);
 const ORDER_TYPES = new Set(['limit', 'post', 'postArb', 'fillAndKill']);
@@ -341,6 +341,10 @@ function buildPlacePayload(args: ParsedArgs): {
     : resolveOrderNumber({ market, side: side as TradeSide, explicit: explicitNumber, game });
   const orderType = parseOrderType(opt(args, '--order-type'));
   const userReference = opt(args, '--user-reference') ?? makeFallbackReference(Date.now());
+  const expirationMinutes = num(args, '--expires-in');
+  if (expirationMinutes !== undefined && (!Number.isInteger(expirationMinutes) || expirationMinutes <= 0)) {
+    throw new Error('--expires-in must be a whole number of minutes greater than 0');
+  }
 
   return {
     confirm: flag(args, '--confirm'),
@@ -365,6 +369,7 @@ function buildPlacePayload(args: ParsedArgs): {
       bet: parsed.riskNum,
       ...(lineNumber !== undefined ? { number: lineNumber } : {}),
       orderType,
+      ...(expirationMinutes !== undefined ? { expirationMinutes } : {}),
       userReference,
     },
   };
@@ -396,17 +401,29 @@ function usage() {
       'orders [--game-id <id>]',
       'unmatched',
       'matched',
-      'graded --user-reference <ref> [--game-id <id>]',
+      'by-reference --user-reference <ref> [--game-id <id>]',
+      'pnl [--from MM-DD-YYYY] [--to MM-DD-YYYY]',
+      'lookup --order-id <id>',
+      'bet --id <id> | --tx-id <id>',
+      'wager-request --id <wagerRequestID>',
       'liability --game-id <id>',
+      'participants [--active]',
+      'discover-games --league <LEAGUE|upcoming> [--sport <sport>]',
+      'average-price --league <LEAGUE>',
+      'single-orderbook --game-id <id>',
+      'affiliate-commission [--from MM-DD-YYYY] [--to MM-DD-YYYY]',
+      'settlement-journal [--tail 20]   # cached exchange-backed settlement/P&L snapshots',
+      'lifecycle [--tail 20]',
       'activity [--tail 20] [--date YYYY-MM-DD]',
-      'place --game-id <id> --market moneyline|spread|total --side home|away|over|under --odds <american|decimal> --bet <amount> [--number <line>] [--order-type limit|post|postArb|fillAndKill] [--confirm]  # odds: |v|>=100 is American, 1<v<100 is decimal (e.g. 1.66); API is sent American',
+      'place --game-id <id> --market moneyline|spread|total --side home|away|over|under --odds <american|decimal> --bet <amount> [--number <line>] [--expires-in <minutes>] [--order-type limit|post|postArb|fillAndKill] [--confirm]  # odds: |v|>=100 is American, 1<v<100 is decimal (e.g. 1.66); API is sent American',
       'place --game-id <id> --market moneyline1x2 --side yes|no --outcome draw|home|away --odds <american|decimal> --bet <amount> [--order-type limit|post|fillAndKill] [--confirm]  # props: --market total on a --kind props game; outrights: --market moneyline on a --kind futures game',
       'cancel --session-id <id>',
       'cancel-all --game-id <id> [--type moneyline|spread|total|moneyline1x2]',
       'cancel-multiple --session-ids <id,id,id>',
+      'cancel-ref --game-id <id> --user-references <ref,ref>',
       'cancel-all-league --league <LEAGUE>   # returns immediately ({ordersReceived:true})',
       'cancel-all-orders',
-      'edit-order --session-id <id> --odds <american|decimal> --bet <amount> [--confirm]   # DISABLED live: use cancel + place (editOrder payload undocumented & destructive)',
+      'edit-order --session-id <id> --odds <american|decimal> --bet <amount> --confirm --confirm-replace   # guarded cancel-and-replace',
       'positions   # normalized account positions and shape warnings (cached)',
       'exposure    # open risk, day-open balance, drawdown (cached)',
     ],
@@ -432,10 +449,26 @@ async function main() {
         updatedAt: state.updatedAt,
         startedAt: state.startedAt,
         catalogCount: state.catalog.games.length,
+        catalog: {
+          updatedAt: state.catalog.updatedAt,
+          lastAttemptAt: state.catalog.lastAttemptAt,
+          lastOkAt: state.catalog.lastOkAt,
+          stale: state.catalog.stale,
+          consecutiveErrorCount: state.catalog.consecutiveErrorCount,
+          ...(state.catalog.lastError ? { lastError: state.catalog.lastError } : {}),
+        },
         watchedCount: state.watchList.length,
         balance: state.balance,
         config: state.config,
         alerts: state.alerts.slice(-10),
+        heartbeat: state.heartbeat,
+        settlement: state.settlement,
+        participants: {
+          active: state.participants.active,
+          count: state.participants.items.length,
+          stale: state.participants.stale,
+          lastOkAt: state.participants.lastOkAt,
+        },
       });
       return;
 
@@ -453,6 +486,13 @@ async function main() {
         count: page.length,
         updatedAt: state.catalog.updatedAt,
         failedLeagues: state.catalog.failedLeagues,
+        freshness: {
+          lastAttemptAt: state.catalog.lastAttemptAt,
+          lastOkAt: state.catalog.lastOkAt,
+          stale: state.catalog.stale,
+          consecutiveErrorCount: state.catalog.consecutiveErrorCount,
+          ...(state.catalog.lastError ? { lastError: state.catalog.lastError } : {}),
+        },
         games: page.map(summarizeGame),
       });
       return;
@@ -586,6 +626,13 @@ async function main() {
       return;
     }
 
+    case 'lifecycle': {
+      const tail = Math.max(1, Math.trunc(num(args, '--tail') ?? 20));
+      const records = state.lifecycle.slice(-tail).reverse();
+      printJson({ ok: true, count: records.length, records });
+      return;
+    }
+
     case 'place': {
       const response = await sendCommand('place', buildPlacePayload(args), { config });
       printJson(response);
@@ -626,11 +673,46 @@ async function main() {
       return;
     }
 
-    case 'graded': {
+    case 'graded':
+    case 'by-reference': {
       const response = await sendCommand('graded', {
         userReference: required(args, '--user-reference'),
         ...(opt(args, '--game-id') ? { gameID: opt(args, '--game-id') } : {}),
       }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'pnl': {
+      const response = await sendCommand('pnl', {
+        ...(opt(args, '--from') ? { startDate: opt(args, '--from') } : {}),
+        ...(opt(args, '--to') ? { endDate: opt(args, '--to') } : {}),
+      }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'lookup': {
+      const response = await sendCommand('lookup', { orderID: required(args, '--order-id') }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'bet': {
+      const id = opt(args, '--id');
+      const txID = opt(args, '--tx-id');
+      if ((id ? 1 : 0) + (txID ? 1 : 0) !== 1) throw new Error('Pass exactly one of --id or --tx-id');
+      const response = await sendCommand('bet', { ...(id ? { id } : {}), ...(txID ? { txID } : {}) }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'wager-request': {
+      const response = await sendCommand('wagerRequest', { wagerRequestID: required(args, '--id') }, { config });
       printJson(response);
       process.exitCode = response.ok ? 0 : 1;
       return;
@@ -643,11 +725,67 @@ async function main() {
       return;
     }
 
+    case 'participants': {
+      const response = await sendCommand('participants', flag(args, '--active') ? { active: true } : {}, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'discover-games': {
+      const response = await sendCommand('gamesIndex', {
+        league: required(args, '--league'),
+        ...(opt(args, '--sport') ? { sport: opt(args, '--sport') } : {}),
+      }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'average-price': {
+      const response = await sendCommand('averagePrice', { leagueRequested: required(args, '--league') }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'single-orderbook': {
+      const response = await sendCommand('singleOrderbook', { gameID: required(args, '--game-id') }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'affiliate-commission': {
+      const response = await sendCommand('affiliateCommission', {
+        ...(opt(args, '--from') ? { fromDate: opt(args, '--from') } : {}),
+        ...(opt(args, '--to') ? { toDate: opt(args, '--to') } : {}),
+      }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'settlement-journal': {
+      const tail = Math.max(1, Math.trunc(num(args, '--tail') ?? 20));
+      printJson({ ok: true, settlement: state.settlement, entries: state.settlementJournal.slice(-tail).reverse() });
+      return;
+    }
+
     case 'cancel-multiple': {
       const raw = required(args, '--session-ids');
       const sessionIDs = raw.split(',').map(s => s.trim()).filter(Boolean);
       if (sessionIDs.length === 0) throw new Error('--session-ids must be a comma-separated list of session ids');
       const response = await sendCommand('cancelMultiple', { sessionIDs }, { config });
+      printJson(response);
+      process.exitCode = response.ok ? 0 : 1;
+      return;
+    }
+
+    case 'cancel-ref': {
+      const userReferences = required(args, '--user-references').split(',').map(item => item.trim()).filter(Boolean);
+      if (userReferences.length === 0) throw new Error('--user-references must be a comma-separated list');
+      const response = await sendCommand('cancelByReference', { gameID: required(args, '--game-id'), userReferences }, { config });
       printJson(response);
       process.exitCode = response.ok ? 0 : 1;
       return;
@@ -679,6 +817,7 @@ async function main() {
         odds: odds.american,
         bet,
         confirm: flag(args, '--confirm'),
+        confirmReplace: flag(args, '--confirm-replace'),
       }, { config });
       printJson(response);
       process.exitCode = response.ok ? 0 : 1;
@@ -697,7 +836,8 @@ async function main() {
     case 'exposure': {
       let openUnmatchedRisk = 0;
       for (const order of state.positions?.unmatched ?? []) {
-        openUnmatchedRisk += order.remainingRisk ?? Math.max(0, (order.offeredRisk ?? 0) - (order.filledRisk ?? 0));
+        const remaining = order.remainingRisk ?? Math.max(0, (order.offeredRisk ?? 0) - (order.filledRisk ?? 0));
+        openUnmatchedRisk += remaining;
       }
       let matchedOpenDownside = 0;
       for (const pos of state.positions?.matched ?? []) matchedOpenDownside += pos.risk;
