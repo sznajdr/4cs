@@ -96,6 +96,10 @@ export interface RuntimeConfig {
   heartbeatSec: number;
   hedgeProfitBuffer: number;
   commissionTakerRate: number;
+  /** Real-time market and account updates; disable explicitly with FOURCASTER_STREAMING=0. */
+  streamingEnabled: boolean;
+  /** Optional comma-separated price-feed filters. Empty means cached active leagues. */
+  streamLeagues: string[];
 }
 
 export function getRuntimeConfig(): RuntimeConfig {
@@ -123,5 +127,10 @@ export function getRuntimeConfig(): RuntimeConfig {
     })(),
     hedgeProfitBuffer: envFloatMin0('HEDGE_PROFIT_BUFFER', 0.25),
     commissionTakerRate: envFloatMin0('COMMISSION_TAKER_RATE', 0.01),
+    streamingEnabled: env('FOURCASTER_STREAMING') !== '0',
+    streamLeagues: (env('FOURCASTER_STREAM_LEAGUES') ?? '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean),
   };
 }

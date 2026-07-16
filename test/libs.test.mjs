@@ -79,13 +79,15 @@ test('legacy v1 state loads with defaults for new fields (migration)', () => {
     assert.deepEqual(state.lifecycle, []);
     assert.equal(state.heartbeat.enabled, false);
     assert.equal(state.heartbeat.timeoutSec, 0);
-    assert.equal(state.version, 3);
+    assert.equal(state.version, 4);
     assert.equal(state.catalog.stale, true);
     assert.equal(state.catalog.consecutiveErrorCount, 0);
     assert.equal(state.settlement.stale, true);
     assert.deepEqual(state.settlementJournal, []);
     assert.deepEqual(state.participants.items, []);
     assert.equal(state.participants.stale, true);
+    assert.equal(state.streams.price.status, 'closed');
+    assert.equal(state.streams.user.replayedEventCount, 0);
     assert.deepEqual(state.watchList, ['g1']);
   } finally {
     rmSync(dir, { recursive: true, force: true });

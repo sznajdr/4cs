@@ -248,6 +248,25 @@ export async function sendOrdersHeartbeat(timeout: number): Promise<unknown> {
   return data.data ?? data;
 }
 
+/**
+ * Durable gap recovery for the account WebSocket feed. The streaming service
+ * returns messages after the supplied Redis stream id; response wrapping has
+ * changed across API revisions, so normalize only the outer collection here.
+ */
+export async function getUserMessages(afterID: string): Promise<unknown[]> {
+  const response = await request<unknown>('GET', '/v2/user/messages', undefined, { afterID });
+  if (Array.isArray(response)) return response;
+  if (!response || typeof response !== 'object') return [];
+  const outer = response as { data?: unknown; messages?: unknown[] };
+  if (Array.isArray(outer.messages)) return outer.messages;
+  if (Array.isArray(outer.data)) return outer.data;
+  if (outer.data && typeof outer.data === 'object') {
+    const data = outer.data as { messages?: unknown[] };
+    if (Array.isArray(data.messages)) return data.messages;
+  }
+  return [];
+}
+
 // --- Bulk cancels & edit (writes — all guarded by LIVE/MAX_BET/confirm upstream) ---
 
 /** Cancel a specific list of resting orders. Body contract confirmed from docs. */

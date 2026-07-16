@@ -35,7 +35,11 @@ Odds are always converted to American before being sent to the exchange.
 ## Reads (no network)
 
 ### `status`
-Daemon status, last update, catalog count, watched count, balance, recent alerts.
+Daemon status, last update, catalog count, watched count, balance, recent alerts,
+and `streams` transport health. `streams.price` includes the last epoch and malformed
+event count; `streams.user` includes the last persisted replay cursor (`messageID`) and
+replayed-event count. The daily raw event tape lives alongside `state.json` as
+`tape-YYYY-MM-DD.jsonl`.
 
 ### `leagues`
 Leagues present in the cached catalog, with per-league sport and game count.

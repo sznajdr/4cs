@@ -460,6 +460,7 @@ async function main() {
         watchedCount: state.watchList.length,
         balance: state.balance,
         config: state.config,
+        streams: state.streams,
         alerts: state.alerts.slice(-10),
         heartbeat: state.heartbeat,
         settlement: state.settlement,

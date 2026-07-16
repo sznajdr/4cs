@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { RuntimeConfig } from './env.js';
 import { getRuntimeConfig } from './env.js';
 import { BASE_URL } from './api/config.js';
-import type { ActivityEvent, Game, MatchedBet, Order, PlaceV3Order, UserProfile } from './api/types.js';
+import type { ActivityEvent, ConnectionStatus, Game, MatchedBet, Order, PlaceV3Order, UserProfile } from './api/types.js';
 import type { AccountPositionsSnapshot } from './positions/types.js';
 import { defaultRuntimeCaches, type RuntimeCaches } from './positions/normalize.js';
 
@@ -54,6 +54,32 @@ export interface PublicRuntimeConfig {
   pollSettlementMs: number;
   baseUrl: string;
   tokenConfigured: boolean;
+  streamingEnabled: boolean;
+  streamLeagues: string[];
+}
+
+export interface StreamFeedSnapshot {
+  status: ConnectionStatus;
+  connectedAt?: string;
+  disconnectedAt?: string;
+  lastEventAt?: string;
+  lastError?: string;
+  reconnectCount: number;
+  malformedEventCount: number;
+  eventCount: number;
+  /** User feed only: last applied Redis stream id, used for REST replay. */
+  lastMessageID?: string;
+  replayedEventCount: number;
+  /** Price feed only: most recent stream epoch, used to flag a potentially missed delta. */
+  lastEpoch?: number;
+}
+
+/** Transport health is independent from REST freshness: a live stream never hides a stale reconciliation. */
+export interface StreamsSnapshot {
+  enabled: boolean;
+  price: StreamFeedSnapshot;
+  user: StreamFeedSnapshot;
+  tape: { eventCount: number; lastWrittenAt?: string };
 }
 
 export interface CatalogSnapshot {
@@ -131,7 +157,7 @@ export interface HeartbeatSnapshot {
 }
 
 export interface StateSnapshot {
-  version: 3;
+  version: 4;
   status: DaemonStatus;
   startedAt?: string;
   updatedAt: string;
@@ -150,6 +176,7 @@ export interface StateSnapshot {
   settlement: SettlementSnapshot;
   settlementJournal: SettlementJournalEntry[];
   participants: ParticipantsSnapshot;
+  streams: StreamsSnapshot;
 }
 
 export function stateFile(config: RuntimeConfig = getRuntimeConfig()): string {
@@ -171,13 +198,19 @@ export function publicRuntimeConfig(config: RuntimeConfig = getRuntimeConfig()):
     pollSettlementMs: config.pollSettlementMs,
     baseUrl: BASE_URL,
     tokenConfigured: config.authToken.trim() !== '',
+    streamingEnabled: config.streamingEnabled,
+    streamLeagues: config.streamLeagues,
   };
+}
+
+function defaultFeedSnapshot(): StreamFeedSnapshot {
+  return { status: 'closed', reconnectCount: 0, malformedEventCount: 0, eventCount: 0, replayedEventCount: 0 };
 }
 
 export function defaultState(config: RuntimeConfig = getRuntimeConfig()): StateSnapshot {
   const now = new Date().toISOString();
   return {
-    version: 3,
+    version: 4,
     status: 'starting',
     updatedAt: now,
     catalog: {
@@ -203,6 +236,12 @@ export function defaultState(config: RuntimeConfig = getRuntimeConfig()): StateS
     settlement: { stale: true, consecutiveErrorCount: 0 },
     settlementJournal: [],
     participants: { items: [], stale: true, consecutiveErrorCount: 0 },
+    streams: {
+      enabled: config.streamingEnabled && config.authToken.trim() !== '',
+      price: defaultFeedSnapshot(),
+      user: defaultFeedSnapshot(),
+      tape: { eventCount: 0 },
+    },
   };
 }
 
@@ -216,7 +255,7 @@ export function readStateSync(config: RuntimeConfig = getRuntimeConfig()): State
     return {
       ...base,
       ...parsed,
-      version: 3,
+      version: 4,
       catalog: {
         ...base.catalog,
         ...(parsed.catalog ?? {}),
@@ -254,6 +293,29 @@ export function readStateSync(config: RuntimeConfig = getRuntimeConfig()): State
         ...(parsed.participants && typeof parsed.participants === 'object' ? parsed.participants : {}),
         items: Array.isArray(parsed.participants?.items) ? parsed.participants.items : [],
       },
+      streams: {
+        ...base.streams,
+        ...(parsed.streams && typeof parsed.streams === 'object' ? parsed.streams : {}),
+        enabled: config.streamingEnabled && config.authToken.trim() !== '',
+        price: {
+          ...base.streams.price,
+          ...(parsed.streams && typeof parsed.streams === 'object' && (parsed.streams as Partial<StreamsSnapshot>).price
+            ? (parsed.streams as Partial<StreamsSnapshot>).price
+            : {}),
+        },
+        user: {
+          ...base.streams.user,
+          ...(parsed.streams && typeof parsed.streams === 'object' && (parsed.streams as Partial<StreamsSnapshot>).user
+            ? (parsed.streams as Partial<StreamsSnapshot>).user
+            : {}),
+        },
+        tape: {
+          ...base.streams.tape,
+          ...(parsed.streams && typeof parsed.streams === 'object' && (parsed.streams as Partial<StreamsSnapshot>).tape
+            ? (parsed.streams as Partial<StreamsSnapshot>).tape
+            : {}),
+        },
+      },
     };
   } catch {
     return defaultState(config);
@@ -268,6 +330,7 @@ export function writeStateAtomic(state: StateSnapshot, config: RuntimeConfig = g
   state.alerts = state.alerts.slice(-100);
   state.lifecycle = state.lifecycle.slice(-1000);
   state.settlementJournal = state.settlementJournal.slice(-1000);
+  state.streams.enabled = config.streamingEnabled && config.authToken.trim() !== '';
   state.heartbeat.enabled = config.live && (config.heartbeatSec ?? 0) > 5;
   state.heartbeat.timeoutSec = config.heartbeatSec ?? 0;
 

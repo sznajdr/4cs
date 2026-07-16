@@ -28,6 +28,7 @@ import {
   getGameLiability,
   getGamesIndex,
   getMatchedBets,
+  getUserMessages,
   getUnmatched,
   cancelOrder,
   getGames,
@@ -48,6 +49,10 @@ import { PollScheduler } from './scheduler/pollScheduler.js';
 import { buildPositionsSnapshot, pruneRuntimeCaches } from './positions/normalize.js';
 import { DEFAULT_LEAGUES } from './lib/leagues.js';
 import type { CancelResult, PlaceMarketType, PlaceV3Order, UserProfile } from './api/types.js';
+import { PriceFeed } from './api/stream/priceFeed.js';
+import { ResilientFeed, type FeedStatus } from './api/stream/feed.js';
+import { appendStreamTape } from './api/stream/tape.js';
+import { applyPriceEvent, applyUserEvent, compareStreamID, isUserStreamMessage, type UserStreamMessage } from './api/stream/reducer.js';
 import { OrderDedupe } from './lib/orderDedupe.js';
 import {
   defaultState,
@@ -57,6 +62,7 @@ import {
   type BalanceSnapshot,
   type DaemonStatus,
   type OrderLifecycleRecord,
+  type OrdersCache,
   type SettlementJournalEntry,
   type StateSnapshot,
 } from './state.js';
@@ -125,6 +131,8 @@ class FourcasterDaemon {
   private dedupe = new OrderDedupe();
   private stopping = false;
   private scheduler: PollScheduler | null = null;
+  private priceFeed: PriceFeed | null = null;
+  private userFeed: ResilientFeed | null = null;
 
   constructor(config = getRuntimeConfig()) {
     this.config = config;
@@ -148,6 +156,9 @@ class FourcasterDaemon {
 
     this.record(makeActivity('CONNECT', '4caster daemon starting', `LIVE=${this.config.live ? '1' : '0'} MAX_BET=${this.config.maxBet}`));
     this.persist();
+
+    // First obtain a complete REST baseline, then attach low-latency deltas.
+    if (this.config.streamingEnabled && this.hasToken()) await this.bootstrapStreamSnapshot();
 
     // Unified serialized scheduler: one exchange-facing task at a time, jittered
     // due times, global backoff on 429, per-task timeout releases the queue.
@@ -173,6 +184,8 @@ class FourcasterDaemon {
       this.addAlert('warning', 'heartbeat_enabled', `Orders heartbeat enabled: all account orders cancel after ${this.config.heartbeatSec}s without a heartbeat`);
     }
 
+    if (this.config.streamingEnabled && this.hasToken()) this.startStreaming();
+
     // Command scanning stays frequent; exchange writes still flow through the guarded handlers.
     this.timers.push(setInterval(() => void this.scanCommands(), 250));
 
@@ -184,6 +197,8 @@ class FourcasterDaemon {
     this.stopping = true;
     for (const timer of this.timers) clearInterval(timer);
     this.scheduler?.stop();
+    this.priceFeed?.stop();
+    this.userFeed?.stop();
     this.setStatus('stopped');
     this.record(makeActivity('CONNECT', '4caster daemon stopped'));
     this.persist();
@@ -207,6 +222,154 @@ class FourcasterDaemon {
 
   private persist(): void {
     writeStateAtomic(this.state, this.config);
+  }
+
+  /** One ordered REST baseline before streams begin; failures stay visible and scheduled reconciliation retries. */
+  private async bootstrapStreamSnapshot(): Promise<void> {
+    for (const [name, refresh] of [
+      ['catalog', () => this.refreshCatalog()],
+      ['balance', () => this.refreshBalance()],
+      ['orders', () => this.refreshWatchedOrders()],
+      ['positions', () => this.refreshPositions()],
+    ] as const) {
+      try {
+        await refresh();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.addAlert('warning', `stream_bootstrap_${name}`, `REST ${name} snapshot failed before streaming; scheduled reconciliation will retry`, detail);
+        this.persist();
+      }
+    }
+  }
+
+  private startStreaming(): void {
+    const token = this.config.authToken;
+    this.state.streams.enabled = true;
+    this.priceFeed = new PriceFeed({
+      name: 'price',
+      url: 'wss://streaming-api.4casters.io/price-stream',
+      token,
+      onMessage: message => this.applyPriceStreamMessage(message),
+      onMalformed: raw => this.markMalformedStreamEvent('price', raw),
+      onStatus: status => this.updateStreamStatus('price', status),
+    }, this.priceSubscription());
+    this.userFeed = new ResilientFeed({
+      name: 'user',
+      url: 'wss://streaming-api.4casters.io/v2/user',
+      token,
+      beforeReady: () => this.replayUserMessages(),
+      onMessage: message => this.applyUserStreamMessage(message),
+      onMalformed: raw => this.markMalformedStreamEvent('user', raw),
+      onStatus: status => this.updateStreamStatus('user', status),
+    });
+    this.priceFeed.start();
+    this.userFeed.start();
+  }
+
+  private priceSubscription(): { gameIDs: string[]; leagueIDs: string[] } {
+    const leagueIDs = this.config.streamLeagues.length
+      ? this.config.streamLeagues
+      : [...new Set(this.state.catalog.games.map(game => game.league).filter(Boolean))];
+    return { gameIDs: this.state.watchList, leagueIDs: leagueIDs.length ? leagueIDs : [...DEFAULT_LEAGUES] };
+  }
+
+  private refreshPriceSubscription(): void {
+    this.priceFeed?.setSubscription(this.priceSubscription());
+  }
+
+  private updateStreamStatus(feed: 'price' | 'user', status: FeedStatus): void {
+    const snapshot = this.state.streams[feed];
+    snapshot.status = status.status;
+    if (status.connectedAt) snapshot.connectedAt = status.connectedAt;
+    if (status.disconnectedAt) snapshot.disconnectedAt = status.disconnectedAt;
+    if (status.lastError) snapshot.lastError = status.lastError;
+    if (status.reconnectCount !== undefined) snapshot.reconnectCount = status.reconnectCount;
+    if (status.status === 'live') this.scheduler?.requestNow(feed === 'price' ? 'catalog' : 'positions');
+    this.persist();
+  }
+
+  private markMalformedStreamEvent(feed: 'price' | 'user', raw: string): void {
+    this.state.streams[feed].malformedEventCount++;
+    this.state.streams[feed].lastError = 'Malformed JSON stream event';
+    appendStreamTape(feed, 'malformed', raw, this.config);
+    this.state.streams.tape.eventCount++;
+    this.state.streams.tape.lastWrittenAt = new Date().toISOString();
+    this.persist();
+  }
+
+  private async applyPriceStreamMessage(message: unknown): Promise<void> {
+    if (!Array.isArray(message) || message.length !== 2 || typeof message[0] !== 'string') {
+      this.markMalformedStreamEvent('price', JSON.stringify(message));
+      return;
+    }
+    const [type, payload] = message as [string, unknown];
+    const epoch = payload && typeof payload === 'object' && typeof (payload as { epoch?: unknown }).epoch === 'number'
+      ? (payload as { epoch: number }).epoch
+      : undefined;
+    const lastEpoch = this.state.streams.price.lastEpoch;
+    if (epoch !== undefined) {
+      if (lastEpoch !== undefined && epoch > lastEpoch + 1) {
+        this.addAlert('warning', 'price_stream_gap', `Price stream epoch jumped from ${lastEpoch} to ${epoch}; queued REST reconciliation`);
+        this.scheduler?.requestNow('catalog');
+      }
+      if (lastEpoch === undefined || epoch > lastEpoch) this.state.streams.price.lastEpoch = epoch;
+    }
+    const changed = applyPriceEvent(this.state.catalog, type, payload);
+    const now = new Date().toISOString();
+    this.state.streams.price.eventCount++;
+    this.state.streams.price.lastEventAt = now;
+    if (changed) this.state.catalog.updatedAt = now;
+    appendStreamTape('price', type, payload, this.config);
+    this.state.streams.tape.eventCount++;
+    this.state.streams.tape.lastWrittenAt = now;
+    this.persist();
+  }
+
+  private async replayUserMessages(): Promise<void> {
+    const afterID = this.state.streams.user.lastMessageID;
+    if (!afterID) return; // First startup has just taken a REST account snapshot.
+    const messages = await getUserMessages(afterID);
+    for (const message of messages) await this.applyUserStreamMessage(message, true);
+  }
+
+  private async applyUserStreamMessage(message: unknown, replayed = false): Promise<void> {
+    if (!isUserStreamMessage(message)) {
+      this.markMalformedStreamEvent('user', JSON.stringify(message));
+      return;
+    }
+    const messageID = typeof message.messageID === 'string' ? message.messageID : undefined;
+    const lastID = this.state.streams.user.lastMessageID;
+    if (messageID && lastID && compareStreamID(messageID, lastID) <= 0) return; // Replay/live overlap is expected.
+
+    const cache = this.state.ordersByGame[message.gameID!] ?? emptyOrdersCache();
+    const action = applyUserEvent(cache, message);
+    const now = new Date().toISOString();
+    cache.updatedAt = now;
+    cache.lastOkAt = now;
+    cache.stale = false;
+    cache.consecutiveErrorCount = 0;
+    this.state.ordersByGame[message.gameID!] = cache;
+    if (messageID) this.state.streams.user.lastMessageID = messageID;
+    this.state.streams.user.eventCount++;
+    this.state.streams.user.lastEventAt = now;
+    if (replayed) this.state.streams.user.replayedEventCount++;
+    this.updateLifecycleFromUserEvent(message, action, now);
+    appendStreamTape('user', action, message, this.config);
+    this.state.streams.tape.eventCount++;
+    this.state.streams.tape.lastWrittenAt = now;
+    this.record(makeActivity(action === 'cancelled' ? 'CANCEL' : action === 'placed' ? 'ORDER' : 'FILL', `User stream ${action} for ${message.gameID}`, messageID));
+    this.persist();
+  }
+
+  private updateLifecycleFromUserEvent(message: UserStreamMessage, action: string, now: string): void {
+    const unmatched = message.unmatched && typeof message.unmatched === 'object' ? message.unmatched as Record<string, unknown> : null;
+    const matched = message.matched && typeof message.matched === 'object' ? message.matched as Record<string, unknown> : null;
+    const orderID = typeof unmatched?.orderID === 'string' ? unmatched.orderID : typeof matched?.orderID === 'string' ? matched.orderID : undefined;
+    const wagerRequestID = typeof unmatched?.wagerRequestID === 'string' ? unmatched.wagerRequestID : typeof matched?.wagerRequestID === 'string' ? matched.wagerRequestID : undefined;
+    const record = this.state.lifecycle.find(item => (orderID && item.orderIDs.includes(orderID)) || (wagerRequestID && item.wagerRequestIDs.includes(wagerRequestID)));
+    if (!record) return;
+    record.updatedAt = now;
+    if (action === 'cancelled') record.status = 'cancelled';
   }
 
   private record(event: ReturnType<typeof makeActivity>): void {
@@ -826,6 +989,7 @@ class FourcasterDaemon {
       this.state.watchList.push(gameID);
     }
     await this.refreshOrdersForGame(gameID);
+    this.refreshPriceSubscription();
     this.record(makeActivity('GAME', `Watching game ${gameID}`));
     this.persist();
     return { ok: true, watched: this.state.watchList };
@@ -834,6 +998,7 @@ class FourcasterDaemon {
   private unwatchGame(gameID: string): unknown {
     this.state.watchList = this.state.watchList.filter(id => id !== gameID);
     delete this.state.ordersByGame[gameID];
+    this.refreshPriceSubscription();
     this.record(makeActivity('GAME', `Stopped watching game ${gameID}`));
     this.persist();
     return { ok: true, watched: this.state.watchList };
@@ -1200,6 +1365,10 @@ function asEditOrder(value: unknown): EditOrderPayload {
     confirm: obj.confirm === true,
     confirmReplace: obj.confirmReplace === true,
   };
+}
+
+function emptyOrdersCache(): OrdersCache {
+  return { unmatched: [], matched: [], stale: false, consecutiveErrorCount: 0 };
 }
 
 async function main(): Promise<void> {

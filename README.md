@@ -1,19 +1,22 @@
 # 4cs
 
 A small, headless **daemon + CLI** for the [4casters](https://4casters.io)
-betting exchange. It polls the orderbook, discovers leagues / games / props /
+betting exchange. It streams orderbook and account events, reconciles them over REST,
+discovers leagues / games / props /
 futures, reads your account (balance, orders, positions), and places, cancels,
 and edits orders — nothing else. No strategies, signals, or notifications: just
 a clean programmatic surface over the exchange.
 
-- **Daemon** (`dist/daemon.js`) — a long-running process that polls the
-  exchange on a serialized, rate-limit-aware scheduler and keeps a JSON state
-  snapshot on disk. It executes writes (place/cancel) on your behalf.
+- **Daemon** (`dist/daemon.js`) — a long-running process that takes a REST
+  snapshot, attaches price + user WebSocket feeds, and retains serialized REST
+  polling as reconciliation. It keeps an atomic JSON state snapshot and an
+  append-only daily event tape on disk.
 - **CLI** (`4caster` / `dist/cli.js`) — reads the state snapshot for instant,
   network-free queries and sends write commands to the daemon over a
   file-based IPC mailbox.
 
-Node **≥ 22**, TypeScript, zero runtime dependencies.
+Node **≥ 22**, TypeScript, and the small `ws` runtime dependency (needed for
+authenticated raw WebSocket handshakes).
 
 ## Quick start
 
@@ -47,6 +50,8 @@ The essentials:
 | `LIVE` | `0` | `0` = every place/cancel is a dry-run preview. `1` = real API writes. |
 | `MAX_BET` | `5` | Hard stake cap enforced before any live placement. |
 | `POLL_ORDERBOOK_MS` / `POLL_BALANCE_MS` / `POLL_ORDERS_MS` / `POLL_POSITIONS_MS` | `8000` / `5000` / `5000` / `30000` | Poll cadences. |
+| `FOURCASTER_STREAMING` | `1` | Opens authenticated price and user feeds after a REST baseline; set `0` for REST-only operation. |
+| `FOURCASTER_STREAM_LEAGUES` | active cached leagues | Optional comma-separated price-feed league filter. Watched games are always added. |
 
 ## Safety model
 
@@ -125,9 +130,12 @@ replacement volume is the full new stake, not the remaining volume.
 The account-wide heartbeat is enabled only when `LIVE=1` and
 `FOURCASTER_HEARTBEAT_SEC` is set to a value greater than five.
 
-The eight-second orderbook cadence is unchanged. Settlement accounting is a separate
-hourly exchange-backed journal (`POLL_SETTLEMENT_MS`), and every cached poll slice
-exposes freshness (`lastAttemptAt`, `lastOkAt`, `stale`, and consecutive error count).
+The market path is `REST snapshot -> subscribe stream -> apply event -> REST reconcile`.
+The eight-second orderbook cadence remains the source-of-truth reconciliation interval;
+it is not removed when streaming is active. Daily `state/tape-YYYY-MM-DD.jsonl` files
+retain the raw market and user events, while `state.json.streams` exposes connection,
+reconnect, malformed-event, replay, and tape health. Settlement accounting is a
+separate hourly exchange-backed journal (`POLL_SETTLEMENT_MS`).
 
 Run `node dist/cli.js --help` for the authoritative list. See
 [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) for details and odds format

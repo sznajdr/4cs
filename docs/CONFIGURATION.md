@@ -21,6 +21,20 @@ then `.env.local` in the project root (existing process env always wins). See
 | `DEBUG` | unset | Set to any value for verbose logging. |
 | `FOURCASTER_HEARTBEAT_SEC` | `0` | Opt-in account-wide dead-man switch. Must be >5 and requires `LIVE=1`; if daemon heartbeats stop before the timeout expires, the exchange cancels every open order on the account. |
 
+## Streaming
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FOURCASTER_STREAMING` | `1` | Connect price and account WebSocket feeds after the REST bootstrap. Set `0` to disable them. |
+| `FOURCASTER_STREAM_LEAGUES` | active cached leagues | Optional comma-separated price-feed league codes. Watched game IDs are added independently. |
+
+The daemon authenticates both feeds with the normal token, sends a filtered price
+subscription, pings every 10 seconds, terminates after 30 seconds without a pong,
+and reconnects with capped exponential backoff. On a user-feed reconnect it replays
+`/v2/user/messages?afterID=<lastMessageID>` before releasing buffered live events.
+Raw accepted events are appended to `state/tape-YYYY-MM-DD.jsonl`; the state snapshot
+contains compact stream health under `streams`.
+
 ## Runtime directories
 
 Relative paths resolve against the project root.

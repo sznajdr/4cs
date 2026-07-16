@@ -1,65 +1,41 @@
 # Architecture
 
-Two processes and a file-based mailbox.
+`4cs` has one authoritative market-state model, fed by two complementary transports.
 
-```
-          ┌────────────────────────────┐        REST         ┌──────────────┐
-          │        daemon.js           │  ───────────────▶   │  4casters    │
-          │  PollScheduler (serialized)│  ◀───────────────   │  exchange    │
-          │   catalog / balance /      │                     └──────────────┘
-          │   orders / positions       │
-          │                            │
-          │  state/state.json  ◀───────┼── atomic snapshot every poll
-          └─────────▲──────────┬───────┘
-                    │          │
-   commands/*.json  │          │  responses/*.json
-                    │          ▼
-          ┌────────────────────────────┐
-          │          cli.js            │  reads state.json directly for
-          │  (4caster wrapper)         │  instant, network-free queries
-          └────────────────────────────┘
+```text
+REST snapshot -> state.json <- price stream (orderbook/game/volume deltas)
+      |              |
+      |              +- user stream (order/fill/cancel deltas)
+      |              +- tape-YYYY-MM-DD.jsonl (raw accepted events)
+      |
+      +- REST reconcile every 8s (catalog), plus account/positions/settlement polls
+
+cli.js <- file IPC -> daemon.js <- guarded REST writes -> 4casters
 ```
 
-## Daemon (`src/daemon.ts`)
+## State ownership
 
-A single class, `FourcasterDaemon`, that:
+- REST creates the initial complete catalog, orders, balance, and positions view
+  before either socket opens. It remains the reconciliation authority.
+- The price feed provides low-latency `orderUpdate`, `gameUpdate`, and
+  `matchedVolumeUpdate` deltas. A reducer changes only fields explicitly present in
+  an event, so a partial message cannot erase a REST snapshot.
+- The user feed provides account-scoped order and fill events. Its `messageID` is
+  persisted; reconnect replay is applied before buffered live frames to prevent a
+  disconnect gap.
+- `state.json` is the compact current view. The daily JSONL tape is the
+  forensic/event source for diagnosing unexpected market or account transitions.
 
-- **Polls** the exchange through a `PollScheduler` (`src/scheduler/pollScheduler.ts`)
-  that runs one exchange-facing task at a time with jittered due-times, a global
-  back-off on HTTP 429, and a per-task timeout that releases the queue. Four
-  tasks are registered: `catalog`, `balance`, `orders`, `positions`, and a slow
-  `settlement` task; an opt-in
-  heartbeat task is added when the account-wide dead-man switch is enabled.
-- **Persists** an atomic JSON snapshot (`state/state.json`) after every poll via
-  `writeStateAtomic` (`src/state.ts`). It includes bounded lifecycle records that
-  correlate client references with exchange `orderID` and `wagerRequestID` values.
-  Every poll slice exposes attempt/success timestamps, `stale`, and consecutive-error
-  metadata. Settlement snapshots are bounded and journaled separately from balances.
-- **Scans** `commands/` every 250 ms for CLI-written command envelopes, executes
-  them through guarded handlers, and writes a result to `responses/`.
+## Transport failure behaviour
 
-All exchange access goes through `src/api/rest.ts` (the typed HTTP client) and
-`src/api/types.ts` (the wire shapes).
+Both feeds use authenticated raw WebSockets, 10-second ping / 30-second pong expiry,
+and capped exponential reconnect. Malformed messages are counted, recorded on the
+tape, and never mutate domain state. A stream outage is visible in `state.json.streams`;
+the existing serialized, rate-limit-aware REST scheduler continues independently.
 
-## CLI (`src/cli.ts`)
+## Process boundary
 
-- **Reads** are answered from `state/state.json` with no network round-trip
-  (`status`, `list-games`, `lines`, `balance`, `orders`, `positions`, …).
-- **Writes and live reads** are sent to the daemon: the CLI writes a
-  `commands/<id>.json` envelope and polls `responses/<id>.json` for the result
-  (`src/ipc.ts`).
-
-## Modules
-
-| Path | Role |
-| --- | --- |
-| `src/api/` | Typed 4casters REST client and wire types |
-| `src/lib/` | Pure helpers: odds conversion, order formatting/validation, dedupe, market-line ladders, payout/commission math |
-| `src/positions/` | Normalize vendor order/matched payloads into account positions; diff snapshots |
-| `src/scheduler/` | Serialized, rate-limit-aware poll scheduler |
-| `src/state.ts` | On-disk state snapshot shape + atomic read/write |
-| `src/ipc.ts` | File-based command/response protocol |
-| `src/env.ts` | Environment/config loading |
-
-State is a single JSON file, rewritten atomically each poll. Restart = cold
-start; the daemon rebuilds its caches from the next few polls.
+The daemon atomically rewrites `state/state.json` and scans `commands/` every 250 ms.
+The CLI reads local state without a network round-trip and uses command/response JSON
+files for daemon-backed reads and guarded writes. All exchange HTTP access remains in
+`src/api/rest.ts`; stream transport is isolated under `src/api/stream/`.
