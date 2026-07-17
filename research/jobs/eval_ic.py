@@ -28,6 +28,13 @@ FEATURES = [
     "mv_rate_1m", "mv_z_30m", "mom_1m", "mom_5m", "mom_15m",
     "overround", "d_overround_5m", "flicker_5m", "slope_asym",
     "liq_share", "x_ml_mom_5m",
+    # Order-flow splits (build_features --order-events): the d_depth1/d_untaken
+    # deltas decomposed by lifecycle kind — fills and cancels carry opposite
+    # information that the aggregate deltas average away.
+    "fill_h_2m", "fill_a_2m", "cancel_h_2m", "cancel_a_2m",
+    "amb_h_2m", "amb_a_2m", "place_h_2m", "place_a_2m",
+    "fill_best_h_2m", "fill_best_a_2m", "cancel_best_h_2m", "cancel_best_a_2m",
+    "cancel_share_h_2m", "cancel_share_a_2m",
 ]
 TARGETS = ["fwd_dmid_1m", "fwd_dmid_5m", "fwd_dmid_15m", "fwd_dmid_30m", "fwd_dmid_60m", "fwd_dmid_ko"]
 

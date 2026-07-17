@@ -16,16 +16,32 @@ Features (per key unless noted):
   x_ml_mom_5m           game-level moneyline momentum joined onto other markets
   ttk_min, ttk_bucket   time-to-kickoff regime (split variable, not a predictor)
 
+With --order-events (order_events parquet root), adds per-side order-flow
+splits — the fill/cancel discriminator d_depth1/d_untaken cannot express:
+  {fill,cancel,amb,place}_{h,a}[_2m]   summed flow by lifecycle kind
+  {fill,cancel}_best_{h,a}[_2m]        same, restricted to at-best orders
+  cancel_share_{h,a}_2m                cancels / (cancels + fills)
+
   python jobs/build_features.py --grid data/grid_1m/grid-60000ms.parquet --out data/features.parquet
 """
 
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import polars as pl
 
 KEY = ["game_id", "market", "line"]
+
+# Same sentinel eval_ic.py uses: line is null for moneyline/1x2 keys and null
+# keys never match in joins.
+LINE_SENTINEL = -9999.0
+
+FILL_EVENTS = ["fill_partial", "fill_complete"]
+FLOW_COLS = [f"{kind}_{side}" for kind in ("fill", "cancel", "amb", "place") for side in ("h", "a")] + [
+    f"{kind}_best_{side}" for kind in ("fill", "cancel") for side in ("h", "a")
+]
 
 
 def _steps(minutes: int, step_ms: int) -> int:
@@ -97,15 +113,100 @@ def add_features(grid: pl.DataFrame, step_ms: int) -> pl.DataFrame:
     return frame.join(ml, on=["game_id", "grid_ms"], how="left")
 
 
+def order_flow_by_step(events: pl.LazyFrame, step_ms: int) -> pl.DataFrame:
+    """Per (key, grid step, side): summed order-flow sizes by lifecycle kind.
+
+    Events between grid points land on the NEXT point (backward-looking: at a
+    grid instant every attributed event has already happened). Resync-boundary
+    events (low_confidence) are excluded — a 15-min diff smeared into one step
+    is noise, not flow.
+    """
+    side = (
+        pl.when(pl.col("bucket").is_in(["homeMoneylines", "homeSpreads", "over"])).then(pl.lit("h"))
+        .when(pl.col("bucket").is_in(["awayMoneylines", "awaySpreads", "under"])).then(pl.lit("a"))
+        .when(pl.col("entry_side") == "yes").then(pl.lit("h"))
+        .when(pl.col("entry_side") == "no").then(pl.lit("a"))
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+    )
+    kind = (
+        pl.when(pl.col("event").is_in(FILL_EVENTS)).then(pl.lit("fill"))
+        .when(pl.col("event") == "cancel").then(pl.lit("cancel"))
+        .when(pl.col("event") == "vanish_ambiguous").then(pl.lit("amb"))
+        .when(pl.col("event").is_in(["place", "resize_up"])).then(pl.lit("place"))
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+    )
+    # Away-spread orders quote the away line; the grid keys spreads by the home line.
+    line = pl.when(pl.col("bucket") == "awaySpreads").then(-pl.col("line")).otherwise(pl.col("line"))
+    flows = (
+        events.filter(~pl.col("low_confidence"))
+        .with_columns(
+            side.alias("side"),
+            kind.alias("kind"),
+            line.fill_null(LINE_SENTINEL).alias("line"),
+            (((pl.col("ts_ms") + step_ms - 1) // step_ms) * step_ms).alias("grid_ms"),
+            pl.col("delta_size").abs().alias("size"),
+            (pl.col("p_order") <= pl.col("p_best_prior") + 1e-9).fill_null(False).alias("at_best"),
+        )
+        .filter(pl.col("side").is_not_null() & pl.col("kind").is_not_null())
+        .collect()
+    )
+    index = ["game_id", "market", "line", "grid_ms"]
+    base = flows.with_columns((pl.col("kind") + "_" + pl.col("side")).alias("name")).pivot(
+        on="name", index=index, values="size", aggregate_function="sum"
+    )
+    best = (
+        flows.filter(pl.col("at_best") & pl.col("kind").is_in(["fill", "cancel"]))
+        .with_columns((pl.col("kind") + "_best_" + pl.col("side")).alias("name"))
+        .pivot(on="name", index=index, values="size", aggregate_function="sum")
+    )
+    merged = base.join(best, on=index, how="full", coalesce=True)
+    missing = [name for name in FLOW_COLS if name not in merged.columns]
+    return merged.with_columns([pl.lit(0.0).alias(name) for name in missing])
+
+
+def add_order_flow(frame: pl.DataFrame, events: pl.LazyFrame, step_ms: int) -> pl.DataFrame:
+    flow = order_flow_by_step(events, step_ms)
+    s2 = _steps(2, step_ms)
+    joined = (
+        frame.with_columns(pl.col("line").fill_null(LINE_SENTINEL).alias("_line_key"))
+        .join(
+            flow.rename({"line": "_line_key"}),
+            left_on=["game_id", "market", "_line_key", "grid_ms"],
+            right_on=["game_id", "market", "_line_key", "grid_ms"],
+            how="left",
+        )
+        .drop("_line_key")
+        .with_columns([pl.col(name).fill_null(0.0) for name in FLOW_COLS])
+        .sort([*KEY, "grid_ms"])
+    )
+    rolled = joined.with_columns(
+        [pl.col(name).rolling_sum(window_size=s2, min_samples=1).over(KEY).alias(f"{name}_2m") for name in FLOW_COLS]
+    )
+    removals = lambda side: pl.col(f"cancel_{side}_2m") + pl.col(f"fill_{side}_2m")  # noqa: E731
+    return rolled.with_columns(
+        [
+            pl.when(removals(side) > 0)
+            .then(pl.col(f"cancel_{side}_2m") / removals(side))
+            .otherwise(None)
+            .alias(f"cancel_share_{side}_2m")
+            for side in ("h", "a")
+        ]
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grid", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--step-ms", type=int, default=60_000)
+    parser.add_argument("--order-events", help="order_events parquet root; adds fill/cancel-split flow features")
     args = parser.parse_args()
 
     grid = pl.read_parquet(args.grid)
     result = add_features(grid, args.step_ms)
+    if args.order_events:
+        events = pl.scan_parquet(str(Path(args.order_events) / "**" / "*.parquet"))
+        result = add_order_flow(result, events, args.step_ms)
     result.write_parquet(args.out)
     print(f"feature rows: {len(result)}, columns: {len(result.columns)}")
 

@@ -41,11 +41,42 @@ BOOK_EVENTS_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+ORDER_EVENTS_SCHEMA: dict[str, pl.DataType] = {
+    "ts_ms": pl.Int64,
+    "game_id": pl.Utf8,
+    "league": pl.Utf8,
+    "kickoff_ms": pl.Int64,
+    "bucket": pl.Utf8,
+    "market": pl.Utf8,
+    "line": pl.Float64,
+    "entry_side": pl.Utf8,
+    "event": pl.Utf8,
+    "order_id": pl.Utf8,
+    "odds": pl.Float64,
+    "p_order": pl.Float64,
+    "delta_size": pl.Float64,
+    "remaining": pl.Float64,
+    "taken_ratio_last": pl.Float64,
+    "order_age_ms": pl.Int64,
+    "p_best_prior": pl.Float64,
+    "mv_gap_delta": pl.Float64,
+    "low_confidence": pl.Boolean,
+    "is_open": pl.Boolean,
+    "live": pl.Boolean,
+    "epoch": pl.Float64,
+}
+
+
 def _date_of(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def write_book_events(rows: Iterator[dict[str, Any]], out_root: str | Path, chunk_rows: int = 250_000) -> int:
+def write_dataset(
+    rows: Iterator[dict[str, Any]],
+    out_root: str | Path,
+    schema: dict[str, pl.DataType],
+    chunk_rows: int = 250_000,
+) -> int:
     """Stream rows to date-partitioned parquet; returns total rows written."""
     out_root = Path(out_root)
     buffer: list[dict[str, Any]] = []
@@ -55,7 +86,7 @@ def write_book_events(rows: Iterator[dict[str, Any]], out_root: str | Path, chun
         nonlocal total
         if not buffer:
             return
-        frame = pl.DataFrame(buffer, schema=BOOK_EVENTS_SCHEMA, strict=False)
+        frame = pl.DataFrame(buffer, schema=schema, strict=False)
         frame = frame.with_columns(pl.col("ts_ms").map_elements(_date_of, return_dtype=pl.Utf8).alias("date"))
         for (date,), part in frame.partition_by("date", as_dict=True).items():
             part_dir = out_root / f"date={date}"
@@ -70,6 +101,14 @@ def write_book_events(rows: Iterator[dict[str, Any]], out_root: str | Path, chun
             flush()
     flush()
     return total
+
+
+def write_book_events(rows: Iterator[dict[str, Any]], out_root: str | Path, chunk_rows: int = 250_000) -> int:
+    return write_dataset(rows, out_root, BOOK_EVENTS_SCHEMA, chunk_rows)
+
+
+def write_order_events(rows: Iterator[dict[str, Any]], out_root: str | Path, chunk_rows: int = 250_000) -> int:
+    return write_dataset(rows, out_root, ORDER_EVENTS_SCHEMA, chunk_rows)
 
 
 def scan_dataset(root: str | Path) -> pl.LazyFrame:

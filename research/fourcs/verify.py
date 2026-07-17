@@ -18,6 +18,7 @@ from typing import Any
 import polars as pl
 
 from .book import ORDERBOOK_FIELDS, BookState
+from .orders import OrderTracker, replay_order_events
 from .replay import final_state
 from .tape import iter_tape, tape_files
 from .writers import scan_dataset
@@ -80,12 +81,53 @@ def reconcile(state: BookState, state_json_path: str | Path) -> dict[str, Any]:
     }
 
 
+def reconcile_orders(paths: list[Path], seed_games: list[Any] | None = None) -> dict[str, Any]:
+    """Order-events gate: (1) telescoping — per (game, bucket), segment base +
+    sum of emitted delta_size must equal the tracked ladder total (any drift =
+    the differ missed or double-counted an event); (2) cross-path — tracked
+    totals must match ladder mass from an independent book replay for every
+    bucket whose final ladder carried ids."""
+    tracker = OrderTracker()
+    for _ in replay_order_events(iter_tape(paths), seed_games=seed_games, tracker=tracker):
+        pass
+    drift = tracker.drift()
+
+    state = final_state(iter_tape(paths), seed_games=seed_games)
+    compared = matched = 0
+    mismatches: list[str] = []
+    for (game_id, bucket), tracked_total in tracker.ladder_totals().items():
+        game = state.games.get(game_id)
+        ladder = game.get(bucket) if game and isinstance(game.get(bucket), list) else []
+        entries = [entry for entry in ladder if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
+        if len(entries) != len([entry for entry in ladder if isinstance(entry, dict)]):
+            continue  # id-less final ladder: tracker reset by design, unknowable
+        state_total = sum(
+            float(entry["sumUntaken"]) for entry in entries if isinstance(entry.get("sumUntaken"), (int, float))
+        )
+        compared += 1
+        if abs(state_total - tracked_total) <= 0.01:
+            matched += 1
+        elif len(mismatches) < 20:
+            mismatches.append(f"{game_id}/{bucket}: state={state_total:.4f} tracked={tracked_total:.4f}")
+    return {
+        "telescoping": drift,
+        "events_by_type": tracker.stats.events_by_type,
+        "seeds": tracker.stats.seeds,
+        "resyncs": tracker.stats.resyncs,
+        "idless_resets": tracker.stats.idless_resets,
+        "cross_path_compared": compared,
+        "cross_path_matched": matched,
+        "sample_mismatches": mismatches,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", required=True, help="daemon state dir (tape-*.jsonl + state.json)")
     parser.add_argument("--events", help="book_events parquet root for invariant checks")
     parser.add_argument("--pattern", default="tape-*.jsonl")
     parser.add_argument("--bootstrap", action="store_true", help="seed metadata shells from state.json before replay")
+    parser.add_argument("--orders", action="store_true", help="run the order-events reconciliation gate")
     args = parser.parse_args()
 
     paths = tape_files(args.state_dir, args.pattern)
@@ -97,6 +139,9 @@ def main() -> None:
     state = final_state(iter_tape(paths), seed_games=seed_games)
     report = reconcile(state, Path(args.state_dir) / "state.json")
     print("reconciliation:", json.dumps(report, indent=2))
+
+    if args.orders:
+        print("order reconciliation:", json.dumps(reconcile_orders(paths, seed_games=seed_games), indent=2))
 
     if args.events:
         print("invariants:", json.dumps(invariants(scan_dataset(args.events)), indent=2))
