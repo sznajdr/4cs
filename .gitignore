@@ -11,3 +11,8 @@ responses/*
 *.log
 *.tmp
 .claude/
+research/data/
+research/reports/
+research/.venv/
+__pycache__/
+*.egg-info/

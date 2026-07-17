@@ -52,6 +52,10 @@ import type { CancelResult, PlaceMarketType, PlaceV3Order, UserProfile } from '.
 import { PriceFeed } from './api/stream/priceFeed.js';
 import { ResilientFeed, type FeedStatus } from './api/stream/feed.js';
 import { appendStreamTape } from './api/stream/tape.js';
+
+// Full-catalog baselines are ~1.9MB each on the live book; 15min keeps the
+// daily tape overhead under ~200MB while WS deltas carry the fine structure.
+const CATALOG_TAPE_INTERVAL_MS = 900_000;
 import { applyPriceEvent, applyUserEvent, compareStreamID, isUserStreamMessage, type UserStreamMessage } from './api/stream/reducer.js';
 import { OrderDedupe } from './lib/orderDedupe.js';
 import {
@@ -133,6 +137,7 @@ class FourcasterDaemon {
   private scheduler: PollScheduler | null = null;
   private priceFeed: PriceFeed | null = null;
   private userFeed: ResilientFeed | null = null;
+  private lastCatalogTapeAtMs = 0;
 
   constructor(config = getRuntimeConfig()) {
     this.config = config;
@@ -463,6 +468,13 @@ class FourcasterDaemon {
         this.addAlert('warning', 'catalog_partial', `${result.failedLeagues.length} leagues failed during orderbook polling`, result.failedLeagues.join(', '));
       } else {
         this.state.alerts = this.state.alerts.filter(alert => alert.code !== 'catalog_partial' && alert.code !== 'catalog_failed' && alert.code !== 'leagues_failed');
+      }
+      // Full-book baseline for tape replay; throttled so the daily tape stays bounded.
+      if (Date.now() - this.lastCatalogTapeAtMs >= CATALOG_TAPE_INTERVAL_MS) {
+        this.lastCatalogTapeAtMs = Date.now();
+        appendStreamTape('rest', 'catalogSnapshot', { games: this.state.catalog.games }, this.config);
+        this.state.streams.tape.eventCount++;
+        this.state.streams.tape.lastWrittenAt = now;
       }
       this.updateHealthyStatus();
       this.persist();
